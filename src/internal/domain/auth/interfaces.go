@@ -19,11 +19,15 @@ type Usecase interface {
 	Authenticate(ctx context.Context, accessToken string) (*domain.Principal, error)
 	// CreateUser validates the input, hashes the password and stores the user.
 	CreateUser(ctx context.Context, in CreateUserInput) (*User, error)
+	// UpdateUser changes a user's email, name and/or password; a new email or password ends their sessions.
+	UpdateUser(ctx context.Context, in UpdateUserInput) (*User, error)
 }
 
 // Repository stores users and refresh tokens in the control database.
 type Repository interface {
 	CreateUser(ctx context.Context, u *User) error
+	// UpdateUser saves a user's email, full name and password hash.
+	UpdateUser(ctx context.Context, u *User) error
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	TouchLastLogin(ctx context.Context, userID int64) error
 	// GetPrincipal returns an active user (in an active tenant, if any) as a

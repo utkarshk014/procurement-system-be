@@ -183,6 +183,52 @@ func (uc *authUsecase) CreateUser(ctx context.Context, in domain_auth.CreateUser
 	return user, nil
 }
 
+func (uc *authUsecase) UpdateUser(ctx context.Context, in domain_auth.UpdateUserInput) (*domain_auth.User, error) {
+	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
+	in.NewEmail = strings.ToLower(strings.TrimSpace(in.NewEmail))
+	in.FullName = strings.TrimSpace(in.FullName)
+	if err := usecase_common.ValidateStruct(in); err != nil {
+		return nil, err
+	}
+	if in.NewEmail == "" && in.FullName == "" && in.Password == "" {
+		return nil, domain.InvalidParams("Nothing to change: give a new email, name or password")
+	}
+
+	user, err := uc.repo.GetUserByEmail(ctx, in.Email)
+	if err != nil {
+		return nil, err
+	}
+	emailChanged := in.NewEmail != "" && in.NewEmail != user.Email
+	if emailChanged {
+		user.Email = in.NewEmail
+	}
+	endSessions := emailChanged
+	if in.FullName != "" {
+		user.FullName = in.FullName
+	}
+	if in.Password != "" {
+		if user.PasswordHash, err = security.HashPassword(in.Password); err != nil {
+			return nil, domain.Internal("Could not hash password", err)
+		}
+		endSessions = true
+	}
+	if err := uc.repo.UpdateUser(ctx, user); err != nil {
+		return nil, err
+	}
+
+	// New credentials must not leave the old ones' sessions alive.
+	revoked := int64(0)
+	if endSessions {
+		if revoked, err = uc.repo.RevokeAllRefreshTokens(ctx, user.ID); err != nil {
+			return nil, err
+		}
+	}
+	uc.logger.InfoContext(ctx, "user updated", "user_id", user.ID,
+		"email_changed", emailChanged, "name_changed", in.FullName != "", "password_changed", in.Password != "",
+		"sessions_revoked", revoked)
+	return user, nil
+}
+
 func (uc *authUsecase) issuePair(ctx context.Context, p *domain.Principal, meta domain_auth.ClientMeta) (*domain_auth.TokenPair, error) {
 	access, accessClaims, err := uc.tokens.Issue(p, domain_auth.TokenTypeAccess)
 	if err != nil {

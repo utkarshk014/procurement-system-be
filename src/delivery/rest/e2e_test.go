@@ -470,6 +470,36 @@ func TestEndToEnd(t *testing.T) {
 			"tokens issued after the replayed one are revoked too")
 	})
 
+	t.Run("update-user changes the login and ends old sessions", func(t *testing.T) {
+		old := api.login("admin@tb.test", "tb-password-123")
+		oldRefresh := old["refresh_token"].(string)
+
+		_, err := usecases.Auth.UpdateUser(ctx, domain_auth.UpdateUserInput{Email: "admin@tb.test", FullName: "Renamed Only"})
+		require.NoError(t, err)
+		assert.Equal(t, 200, api.do("POST", "/api/v1/auth/refresh", "", map[string]any{"refresh_token": oldRefresh}).status,
+			"a name change keeps sessions")
+
+		u, err := usecases.Auth.UpdateUser(ctx, domain_auth.UpdateUserInput{
+			Email: "ADMIN@tb.test", NewEmail: "Uncle@TB.test", FullName: "Uncle", Password: "uncle-password-1",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "uncle@tb.test", u.Email)
+
+		assert.Equal(t, 401, api.do("POST", "/api/v1/auth/login", "", map[string]any{"email": "admin@tb.test", "password": "tb-password-123"}).status)
+		assert.Equal(t, 401, api.do("POST", "/api/v1/auth/login", "", map[string]any{"email": "uncle@tb.test", "password": "tb-password-123"}).status)
+		fresh := api.login("uncle@tb.test", "uncle-password-1")
+		assert.Equal(t, "Uncle", fresh["user"].(map[string]any)["full_name"])
+
+		_, err = usecases.Auth.UpdateUser(ctx, domain_auth.UpdateUserInput{Email: "uncle@tb.test", NewEmail: "admin@esis.in"})
+		assert.True(t, domain.IsKind(err, domain.KindConflict), "email already taken")
+		_, err = usecases.Auth.UpdateUser(ctx, domain_auth.UpdateUserInput{Email: "uncle@tb.test"})
+		assert.True(t, domain.IsKind(err, domain.KindInvalidParams), "nothing to change")
+		_, err = usecases.Auth.UpdateUser(ctx, domain_auth.UpdateUserInput{Email: "nobody@tb.test", FullName: "X"})
+		assert.True(t, domain.IsKind(err, domain.KindNotFound))
+		_, err = usecases.Auth.UpdateUser(ctx, domain_auth.UpdateUserInput{Email: "uncle@tb.test", Password: "short"})
+		assert.True(t, domain.IsKind(err, domain.KindValidation), "password too short")
+	})
+
 	t.Run("suspending a tenant locks its users out immediately", func(t *testing.T) {
 		_, err := dbm.Control().Exec(ctx, `UPDATE pms.sys_tenant SET status = 'suspended' WHERE code = 'ESIS'`)
 		require.NoError(t, err)

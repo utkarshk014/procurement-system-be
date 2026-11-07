@@ -1,9 +1,10 @@
-// Command admin runs one-off operations: platform migrations and creating
-// the first platform admin (there is no public sign-up).
+// Command admin runs one-off operations: platform migrations, creating the
+// first platform admin (there is no public sign-up) and changing a user's login.
 //
 //	go run ./src/cmd/admin migrate
 //	go run ./src/cmd/admin migrate-status
 //	go run ./src/cmd/admin create-platform-admin -email you@example.com -name "Your Name"
+//	go run ./src/cmd/admin update-user -email old@example.com -new-email new@example.com -name "New Name" -password
 //
 // The password is read from PMS_ADMIN_PASSWORD, or prompted for without echo.
 package main
@@ -46,7 +47,8 @@ func usage() {
 commands:
   migrate                 apply pending platform migrations (pms.sys_* tables)
   migrate-status          list migrations and whether they are applied
-  create-platform-admin   -email <email> -name <full name>`)
+  create-platform-admin   -email <email> -name <full name>
+  update-user             -email <current email> [-new-email <email>] [-name <full name>] [-password]`)
 }
 
 func run(cmd string, args []string) error {
@@ -114,19 +116,52 @@ func run(cmd string, args []string) error {
 			Role:     domain.RolePlatformAdmin,
 		})
 		if err != nil {
-			if ae, ok := domain.AsAppError(err); ok && len(ae.Fields) > 0 {
-				for _, f := range ae.Fields {
-					fmt.Fprintf(os.Stderr, "  %s %s\n", f.Field, f.Message)
-				}
-			}
+			printFieldErrors(err)
 			return err
 		}
 		fmt.Printf("created platform admin %s (id %d)\n", user.Email, user.ID)
 		return nil
 
+	case "update-user":
+		fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
+		email := fs.String("email", "", "the user's current email")
+		newEmail := fs.String("new-email", "", "new login email")
+		name := fs.String("name", "", "new full name")
+		setPassword := fs.Bool("password", false, "set a new password (prompted)")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if *email == "" {
+			return errors.New("-email is required")
+		}
+		in := domain_auth.UpdateUserInput{Email: *email, NewEmail: *newEmail, FullName: *name}
+		if *setPassword {
+			if in.Password, err = readPassword(); err != nil {
+				return err
+			}
+		}
+		repos := repository.NewRepositories(dbm)
+		usecases := usecase.NewUsecases(cfg, repos, dbm, logger.New(cfg.AppEnv, cfg.LogLevel))
+		user, err := usecases.Auth.UpdateUser(ctx, in)
+		if err != nil {
+			printFieldErrors(err)
+			return err
+		}
+		fmt.Printf("updated user %d: %s (%s)\n", user.ID, user.Email, user.FullName)
+		return nil
+
 	default:
 		usage()
 		return fmt.Errorf("unknown command %q", cmd)
+	}
+}
+
+// printFieldErrors shows each field problem of a validation or conflict error.
+func printFieldErrors(err error) {
+	if ae, ok := domain.AsAppError(err); ok {
+		for _, f := range ae.Fields {
+			fmt.Fprintf(os.Stderr, "  %s %s\n", f.Field, f.Message)
+		}
 	}
 }
 

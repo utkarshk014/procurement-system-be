@@ -85,6 +85,14 @@ type CreateUserInput struct {
 	TenantID *int64      `json:"-"`
 }
 
+// UpdateUserInput finds a user by Email; empty fields stay unchanged.
+type UpdateUserInput struct {
+	Email    string `json:"email" validate:"required,email,max=200"`
+	NewEmail string `json:"new_email" validate:"omitempty,email,max=200"`
+	FullName string `json:"full_name" validate:"max=200"`
+	Password string `json:"password" validate:"omitempty,min=10,max=200"`
+}
+
 // Me is the logged-in user as the frontend sees them.
 type Me struct {
 	ID       int64       `json:"id"`

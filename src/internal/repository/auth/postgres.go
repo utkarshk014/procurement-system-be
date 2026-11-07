@@ -38,6 +38,26 @@ func (r *postgresAuthRepository) CreateUser(ctx context.Context, u *domain_auth.
 	return nil
 }
 
+func (r *postgresAuthRepository) UpdateUser(ctx context.Context, u *domain_auth.User) error {
+	err := r.db.QueryRow(ctx, `
+		UPDATE pms.sys_user SET email = $2, full_name = $3, password_hash = $4, updated_at = now()
+		WHERE id = $1
+		RETURNING updated_at`,
+		u.ID, u.Email, u.FullName, u.PasswordHash,
+	).Scan(&u.UpdatedAt)
+	if err != nil {
+		if pgutil.IsNoRows(err) {
+			return domain.NotFound("User not found")
+		}
+		if _, ok := pgutil.UniqueViolation(err); ok {
+			return domain.Conflict("A user with this email already exists",
+				domain.FieldError{Field: "new_email", Message: "is already registered"})
+		}
+		return domain.Internal("Could not update user", err)
+	}
+	return nil
+}
+
 func (r *postgresAuthRepository) GetUserByEmail(ctx context.Context, email string) (*domain_auth.User, error) {
 	u := &domain_auth.User{}
 	err := r.db.QueryRow(ctx,
