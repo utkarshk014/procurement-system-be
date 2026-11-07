@@ -117,7 +117,10 @@ Why this model:
 - The DBA's procedures are hard-coded to the `pms` schema and his tables have
   no tenant column. With a database per tenant they work **unchanged**.
 - Strongest isolation: one tenant's data can never appear in another's query.
-- `sys_tenant.db_key` is **unique**, so two tenants can never share a database.
+- `sys_tenant.db_key` is **unique**, and startup refuses two `TENANT_DATABASES` keys that point at
+  the same host/port/database, so two tenants can never share a database.
+- A tenant database that is down does not stop the API: it is logged at startup and that
+  tenant's requests get `503` until it is back; the control database is required.
 - Moving a tenant is a config change (`TENANT_DATABASES`), not a code change.
 
 How a request finds its database: the access token's user → `GetPrincipal`
@@ -140,11 +143,16 @@ create tables in `pms` but not new schemas or databases).
 - Every request re-loads the user from the database, so deactivating a user or
   suspending a tenant locks them out **immediately**, not when the token expires.
 - Refresh **rotates**: each refresh token works once (`UPDATE … SET revoked_at
-  … RETURNING`), logout revokes it, expired rows are cleaned hourly.
+  … RETURNING`), logout revokes it, expired rows are cleaned at startup and hourly.
+- **Reuse detection**: replaying a refresh token that was used more than 30 s ago
+  (the grace lets two tabs refresh together) revokes every refresh token of that user.
+- Tokens are checked with 30 s of clock leeway so API instances with slightly different clocks agree.
 - Login answers the same for "wrong password" and "no such email", and spends
   the same argon2id time on both (OWASP parameters: 19 MiB, 2 passes). Login is rate-limited
-  per IP (`LOGIN_RATE_LIMIT_PER_MINUTE`, JSON `429`); behind a load balancer set `TRUST_PROXY=true`
-  so the limit applies per client, not to the proxy's IP.
+  per client IP (`LOGIN_RATE_LIMIT_PER_MINUTE`, JSON `429`).
+- The client IP is the TCP peer, unless it is a proxy listed in `TRUSTED_PROXIES`; only then is
+  `X-Forwarded-For` read, right to left, skipping trusted hops. Headers like `True-Client-IP` or
+  `X-Real-IP` are never trusted, so a client cannot pick its own rate-limit bucket or logged IP.
 
 | Role | Can |
 |---|---|
@@ -190,7 +198,7 @@ that don't match the dates, and 18-month ranges.
 | `finyr` is `YYYY-YYYY` with consecutive years | walkthrough ("9 characters, start year – end year") |
 | Only the current or the previous financial year (by today in `DEFAULT_TIMEZONE`) | walkthrough (02-11-2026 → 2026-2027 or 2025-2026) |
 | Dates are 1 April → 31 March; sent dates must match | walkthrough ("1st April to 31st March of next year") |
-| While no year is current, the new one is made current | otherwise the company step could never start (no procedure changes it later) |
+| Which year is current: while none is, the new one; else an explicit `finyr_is_current`; else today's year | decided inside the locked transaction, so creating the previous year first cannot leave it current (no procedure changes it later) |
 | Not a duplicate, no overlap | DBA function (re-run in a locked transaction) |
 
 ## 7. Company rules
@@ -234,12 +242,15 @@ only place that maps them to HTTP.
 |---|---|---|
 | `invalid_params` | 400 | Malformed JSON, wrong content type, bad query |
 | `unauthorized` | 401 | No/invalid/expired token, wrong credentials |
-| `forbidden` | 403 | Wrong role, disabled account, platform admin on tenant routes |
+| `forbidden` | 403 | Wrong role, platform admin on tenant routes, disabled account at login (mid-session it is 401) |
 | `not_found` | 404 | Unknown record or route |
+| `method_not_allowed` | 405 | Route exists but not for this HTTP method |
 | `rate_limited` | 429 | Too many login attempts from one IP |
 | `conflict` | 409 | Duplicate financial year / overlap / tenant code / email / db_key; company before financial year |
 | `validation_failed` | 422 | Field rules failed (with `fields[]`) |
 | `internal_error` | 500 | Anything unexpected; logged with cause, caller sees a generic message |
+| `service_unavailable` | 503 | A database could not be reached |
+| `timeout` | 504 | The request ran past `REQUEST_TIMEOUT` (e.g. a stuck database) |
 
 ## 9. Open items for the DBA
 

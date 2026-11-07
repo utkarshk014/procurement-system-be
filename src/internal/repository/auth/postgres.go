@@ -2,6 +2,7 @@ package repository_auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
@@ -116,6 +117,30 @@ func (r *postgresAuthRepository) RevokeRefreshToken(ctx context.Context, jti str
 		return domain.Internal("Could not revoke refresh token", err)
 	}
 	return nil
+}
+
+func (r *postgresAuthRepository) RevokedBefore(ctx context.Context, jti string, cutoff time.Time) (int64, error) {
+	var userID int64
+	err := r.db.QueryRow(ctx,
+		`SELECT user_id FROM pms.sys_refresh_token WHERE jti = $1 AND revoked_at < $2`, jti, cutoff,
+	).Scan(&userID)
+	if err != nil {
+		if pgutil.IsNoRows(err) {
+			return 0, domain.NotFound("Refresh token was not revoked earlier")
+		}
+		return 0, domain.Internal("Could not check refresh token", err)
+	}
+	return userID, nil
+}
+
+func (r *postgresAuthRepository) RevokeAllRefreshTokens(ctx context.Context, userID int64) (int64, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE pms.sys_refresh_token SET revoked_at = now()
+		WHERE user_id = $1 AND revoked_at IS NULL`, userID)
+	if err != nil {
+		return 0, domain.Internal("Could not revoke refresh tokens", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (r *postgresAuthRepository) DeleteExpiredRefreshTokens(ctx context.Context) (int64, error) {

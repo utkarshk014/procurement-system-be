@@ -9,11 +9,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -50,11 +54,14 @@ func TestEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	dsn, err := pg.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err)
+	dsnB := createTenantDatabase(t, ctx, dsn, "esis_b")
+	dsnC := createTenantDatabase(t, ctx, dsn, "esis_c")
+	const unreachableDSN = "postgres://pms:pms@127.0.0.1:1/nowhere?sslmode=disable&connect_timeout=1"
 
 	cfg := &utils.Config{
 		AppEnv:             "test",
 		ControlDatabaseURL: dsn,
-		TenantDatabases:    map[string]string{"esis": dsn, "spare": dsn + "&application_name=spare"},
+		TenantDatabases:    map[string]string{"esis": dsn, "esis_b": dsnB, "esis_c": dsnC, "down": unreachableDSN},
 		DefaultTimeZone:    "Asia/Kolkata",
 		JWTAccessSecret:    "test-access-secret-test-access-secret-0001",
 		JWTRefreshSecret:   "test-refresh-secret-test-refresh-secret-0002",
@@ -66,9 +73,13 @@ func TestEndToEnd(t *testing.T) {
 		LoginRateLimit:     1000,
 	}
 
+	_, err = database.NewManager(ctx, dsn, map[string]string{"esis": dsn, "alias": dsn + "&application_name=x"})
+	require.ErrorContains(t, err, "point at the same database", "two keys on one database are refused")
+
 	dbm, err := database.NewManager(ctx, cfg.ControlDatabaseURL, cfg.TenantDatabases)
-	require.NoError(t, err)
+	require.NoError(t, err, "an unreachable tenant database must not stop startup")
 	t.Cleanup(dbm.Close)
+	assert.Contains(t, dbm.Unreachable(), "down")
 
 	applied, err := database.MigrateUp(ctx, dbm.Control())
 	require.NoError(t, err)
@@ -130,7 +141,7 @@ func TestEndToEnd(t *testing.T) {
 		tenantID = res.data()["id"].(float64)
 		assert.Equal(t, "ESIS", res.data()["code"], "code is upper-cased")
 
-		dup := api.do("POST", "/api/v1/admin/tenants", root, map[string]any{"code": "ESIS", "name": "Again", "db_key": "spare"})
+		dup := api.do("POST", "/api/v1/admin/tenants", root, map[string]any{"code": "ESIS", "name": "Again", "db_key": "esis_b"})
 		assert.Equal(t, 409, dup.status)
 		assert.Equal(t, "is already taken", dup.fieldErrors()["code"])
 
@@ -334,7 +345,7 @@ func TestEndToEnd(t *testing.T) {
 				defer wg.Done()
 				c := clone(company)
 				c["header_2"] = fmt.Sprintf("Branch %d", i)
-				api.do("PUT", "/api/v1/company/", esis, c)
+				assert.Equal(t, 200, api.do("PUT", "/api/v1/company/", esis, c).status, "existing company is updated")
 			}(i)
 		}
 		wg.Wait()
@@ -347,6 +358,81 @@ func TestEndToEnd(t *testing.T) {
 		st := api.do("GET", "/api/v1/setup/status", esis, nil)
 		assert.Equal(t, "done", st.data()["next_step"])
 		assert.Equal(t, true, st.data()["company_done"])
+	})
+
+	t.Run("second tenant on its own database is isolated, and its first saves are race-free", func(t *testing.T) {
+		res := api.do("POST", "/api/v1/admin/tenants", root, map[string]any{"code": "TB", "name": "Tenant B", "db_key": "esis_b"})
+		require.Equal(t, 201, res.status, res.body)
+		path := fmt.Sprintf("/api/v1/admin/tenants/%d/admins", int(res.data()["id"].(float64)))
+		require.Equal(t, 201, api.do("POST", path, root, map[string]any{"email": "admin@tb.test", "full_name": "TB Admin", "password": "tb-password-123"}).status)
+		tb := api.login("admin@tb.test", "tb-password-123")["access_token"].(string)
+
+		assert.Equal(t, 404, api.do("GET", "/api/v1/company/", tb, nil).status, "tenant B does not see ESIS's company")
+		assert.Equal(t, "financial_year", api.do("GET", "/api/v1/setup/status", tb, nil).data()["next_step"])
+
+		statuses := concurrently(6, func(int) int {
+			return api.do("POST", "/api/v1/financial-years/", tb, map[string]any{"finyr": curFY}).status
+		})
+		assert.Equal(t, []int{201, 409, 409, 409, 409, 409}, statuses, "one create wins, the rest see the duplicate")
+
+		statuses = concurrently(8, func(i int) int {
+			c := clone(company)
+			c["name"], c["shortname"] = fmt.Sprintf("Tenant B Co %d", i), "TB"
+			return api.do("PUT", "/api/v1/company/", tb, c).status
+		})
+		assert.Equal(t, []int{200, 200, 200, 200, 200, 200, 200, 201}, statuses, "exactly one first save creates the row")
+
+		var bRows, aRows int
+		var aName string
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.company_master`).Scan(&aRows))
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT name FROM pms.company_master WHERE sl = 1`).Scan(&aName))
+		poolB, err := dbm.Tenant("esis_b")
+		require.NoError(t, err)
+		require.NoError(t, poolB.QueryRow(ctx, `SELECT count(*) FROM pms.company_master`).Scan(&bRows))
+		assert.Equal(t, 1, aRows)
+		assert.Equal(t, 1, bRows)
+		assert.Equal(t, "ESIS Educational Society", aName, "ESIS's row is untouched by tenant B")
+		assert.Equal(t, "ESIS Educational Society", api.do("GET", "/api/v1/company/", esis, nil).data()["name"])
+	})
+
+	t.Run("racing creates of both years always leave today's year current", func(t *testing.T) {
+		res := api.do("POST", "/api/v1/admin/tenants", root, map[string]any{"code": "TC", "name": "Tenant C", "db_key": "esis_c"})
+		require.Equal(t, 201, res.status, res.body)
+		path := fmt.Sprintf("/api/v1/admin/tenants/%d/admins", int(res.data()["id"].(float64)))
+		require.Equal(t, 201, api.do("POST", path, root, map[string]any{"email": "admin@tc.test", "full_name": "TC Admin", "password": "tc-password-123"}).status)
+		tc := api.login("admin@tc.test", "tc-password-123")["access_token"].(string)
+		poolC, err := dbm.Tenant("esis_c")
+		require.NoError(t, err)
+
+		for round := 0; round < 10; round++ {
+			_, err := poolC.Exec(ctx, `DELETE FROM pms.finyr_master`)
+			require.NoError(t, err)
+			years := []string{prevFY, curFY}
+			statuses := concurrently(2, func(i int) int {
+				return api.do("POST", "/api/v1/financial-years/", tc, map[string]any{"finyr": years[i]}).status
+			})
+			require.Equal(t, []int{201, 201}, statuses)
+			var current string
+			require.NoError(t, poolC.QueryRow(ctx, `SELECT string_agg(finyr, ',') FROM pms.finyr_master WHERE finyr_is_current`).Scan(&current))
+			require.Equal(t, curFY, current, "round %d", round)
+		}
+	})
+
+	t.Run("a tenant whose database is down gets 503, others keep working", func(t *testing.T) {
+		res := api.do("POST", "/api/v1/admin/tenants", root, map[string]any{"code": "DOWN", "name": "Down", "db_key": "down"})
+		require.Equal(t, 201, res.status, res.body)
+		path := fmt.Sprintf("/api/v1/admin/tenants/%d/admins", int(res.data()["id"].(float64)))
+		require.Equal(t, 201, api.do("POST", path, root, map[string]any{"email": "admin@down.test", "full_name": "Down", "password": "down-password-1"}).status)
+		down := api.login("admin@down.test", "down-password-1")["access_token"].(string)
+
+		got := api.do("GET", "/api/v1/company/", down, nil)
+		assert.Equal(t, 503, got.status)
+		assert.Equal(t, "service_unavailable", got.errCode())
+		assert.Equal(t, 200, api.do("GET", "/api/v1/company/", esis, nil).status)
+	})
+
+	t.Run("wrong method is 405", func(t *testing.T) {
+		assert.Equal(t, 405, api.do("DELETE", "/api/v1/company/", esis, nil).status)
 	})
 
 	t.Run("refresh tokens work once", func(t *testing.T) {
@@ -368,6 +454,20 @@ func TestEndToEnd(t *testing.T) {
 		refresh := tokens["refresh_token"].(string)
 		assert.Equal(t, 204, api.do("POST", "/api/v1/auth/logout", "", map[string]any{"refresh_token": refresh}).status)
 		assert.Equal(t, 401, api.do("POST", "/api/v1/auth/refresh", "", map[string]any{"refresh_token": refresh}).status)
+	})
+
+	t.Run("replaying an old refresh token revokes the whole session family", func(t *testing.T) {
+		first := api.login("admin@esis.in", "esis-password-123")["refresh_token"].(string)
+		next := api.do("POST", "/api/v1/auth/refresh", "", map[string]any{"refresh_token": first})
+		require.Equal(t, 200, next.status)
+		stolenChain := next.data()["refresh_token"].(string)
+
+		// Past the grace window the replay is treated as theft.
+		_, err := dbm.Control().Exec(ctx, `UPDATE pms.sys_refresh_token SET revoked_at = now() - interval '1 minute' WHERE revoked_at IS NOT NULL`)
+		require.NoError(t, err)
+		assert.Equal(t, 401, api.do("POST", "/api/v1/auth/refresh", "", map[string]any{"refresh_token": first}).status)
+		assert.Equal(t, 401, api.do("POST", "/api/v1/auth/refresh", "", map[string]any{"refresh_token": stolenChain}).status,
+			"tokens issued after the replayed one are revoked too")
 	})
 
 	t.Run("suspending a tenant locks its users out immediately", func(t *testing.T) {
@@ -471,5 +571,41 @@ func clone(m map[string]any) map[string]any {
 	for k, v := range m {
 		out[k] = v
 	}
+	return out
+}
+
+// createTenantDatabase makes another database in the same server, loaded with the DBA's objects.
+func createTenantDatabase(t *testing.T, ctx context.Context, dsn, name string) string {
+	t.Helper()
+	admin, err := pgx.Connect(ctx, dsn)
+	require.NoError(t, err)
+	defer admin.Close(ctx)
+	_, err = admin.Exec(ctx, "CREATE DATABASE "+name)
+	require.NoError(t, err)
+
+	other := strings.Replace(dsn, "/esispms?", "/"+name+"?", 1)
+	conn, err := pgx.Connect(ctx, other)
+	require.NoError(t, err)
+	defer conn.Close(ctx)
+	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "db", "legacy", "001_pms_objects.sql"))
+	require.NoError(t, err)
+	_, err = conn.Exec(ctx, string(sql))
+	require.NoError(t, err)
+	return other
+}
+
+// concurrently runs fn n times at once and returns the results sorted.
+func concurrently(n int, fn func(i int) int) []int {
+	out := make([]int, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			out[i] = fn(i)
+		}(i)
+	}
+	wg.Wait()
+	sort.Ints(out)
 	return out
 }

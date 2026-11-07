@@ -85,3 +85,24 @@ func TestTamperedAndForeignTokensAreRejected(t *testing.T) {
 	_, err = iss.Verify(none, domain_auth.TokenTypeAccess)
 	assert.Error(t, err)
 }
+
+// With identical secrets only the typ claim stops a refresh token being used as an access token.
+func TestTypClaimIsEnforcedOnItsOwn(t *testing.T) {
+	iss := NewJWTIssuer(accessSecret, accessSecret, "pms-api", time.Minute, time.Hour)
+	refresh, _, err := iss.Issue(principal(), domain_auth.TokenTypeRefresh)
+	require.NoError(t, err)
+	_, err = iss.Verify(refresh, domain_auth.TokenTypeAccess)
+	assert.ErrorContains(t, err, "wrong token type")
+}
+
+func TestSmallClockSkewIsTolerated(t *testing.T) {
+	iss := NewJWTIssuer(accessSecret, refreshSecret, "pms-api", time.Minute, time.Hour).(*jwtIssuer)
+	ahead := time.Now().Add(10 * time.Second) // issued by an instance whose clock runs 10s fast
+	iss.now = func() time.Time { return ahead }
+	tok, _, err := iss.Issue(principal(), domain_auth.TokenTypeAccess)
+	require.NoError(t, err)
+
+	iss.now = time.Now
+	_, err = iss.Verify(tok, domain_auth.TokenTypeAccess)
+	assert.NoError(t, err)
+}

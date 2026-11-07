@@ -84,6 +84,7 @@ func (uc *authUsecase) Refresh(ctx context.Context, in domain_auth.RefreshInput,
 	userID, err := uc.repo.ConsumeRefreshToken(ctx, claims.ID)
 	if err != nil {
 		if domain.IsKind(err, domain.KindNotFound) {
+			uc.revokeAllOnReuse(ctx, claims.ID, meta)
 			return nil, domain.Unauthorized("Session expired, please log in again")
 		}
 		return nil, err
@@ -99,6 +100,26 @@ func (uc *authUsecase) Refresh(ctx context.Context, in domain_auth.RefreshInput,
 		return nil, err
 	}
 	return uc.issuePair(ctx, principal, meta)
+}
+
+// refreshReuseGrace lets two tabs refresh at the same moment without being treated as theft.
+const refreshReuseGrace = 30 * time.Second
+
+// revokeAllOnReuse logs the user out everywhere when an already-used refresh token is replayed.
+func (uc *authUsecase) revokeAllOnReuse(ctx context.Context, jti string, meta domain_auth.ClientMeta) {
+	userID, err := uc.repo.RevokedBefore(ctx, jti, time.Now().Add(-refreshReuseGrace))
+	if err != nil {
+		if !domain.IsKind(err, domain.KindNotFound) {
+			uc.logger.ErrorContext(ctx, "refresh reuse check failed", "error", err)
+		}
+		return
+	}
+	revoked, err := uc.repo.RevokeAllRefreshTokens(ctx, userID)
+	if err != nil {
+		uc.logger.ErrorContext(ctx, "could not revoke tokens after refresh reuse", "user_id", userID, "error", err)
+		return
+	}
+	uc.logger.WarnContext(ctx, "refresh token reuse detected, all sessions revoked", "user_id", userID, "revoked", revoked, "ip", meta.IP)
 }
 
 func (uc *authUsecase) Logout(ctx context.Context, in domain_auth.RefreshInput) error {

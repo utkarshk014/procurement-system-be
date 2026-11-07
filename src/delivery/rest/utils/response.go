@@ -2,10 +2,13 @@
 package rest_utils
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
+	"net"
 	"net/http"
 	"strings"
 
@@ -51,7 +54,17 @@ var statusByKind = map[domain.ErrorKind]int{
 	domain.KindNotFound:      http.StatusNotFound,
 	domain.KindConflict:      http.StatusConflict,
 	domain.KindRateLimited:   http.StatusTooManyRequests,
+	domain.KindMethod:        http.StatusMethodNotAllowed,
 	domain.KindInternal:      http.StatusInternalServerError,
+	domain.KindUnavailable:   http.StatusServiceUnavailable,
+	domain.KindTimeout:       http.StatusGatewayTimeout,
+}
+
+// serverErrorMessage is the only text a caller sees for each 5xx kind.
+var serverErrorMessage = map[domain.ErrorKind]string{
+	domain.KindInternal:    "Something went wrong, please try again",
+	domain.KindUnavailable: "Service is temporarily unavailable, please try again",
+	domain.KindTimeout:     "The request took too long, please try again",
 }
 
 // WriteError writes {"error": …}; 5xx causes are logged and hidden from the caller.
@@ -59,18 +72,22 @@ func WriteError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 	reqID := middleware.GetReqID(r.Context())
 	ae, ok := domain.AsAppError(err)
 	if !ok {
-		ae = &domain.AppError{Kind: domain.KindInternal, Message: "Something went wrong", Err: err}
+		ae = &domain.AppError{Kind: domain.KindInternal, Err: err}
 	}
-	status, known := statusByKind[ae.Kind]
+	kind := ae.Kind
+	if kind == domain.KindInternal {
+		kind = classifyServerError(err)
+	}
+	status, known := statusByKind[kind]
 	if !known {
 		status = http.StatusInternalServerError
 	}
 
-	body := ErrorBody{Code: ae.Kind, Message: ae.Message, Fields: ae.Fields, RequestID: reqID}
+	body := ErrorBody{Code: kind, Message: ae.Message, Fields: ae.Fields, RequestID: reqID}
 	if status >= 500 {
 		logger.ErrorContext(r.Context(), "request failed",
-			"request_id", reqID, "method", r.Method, "path", r.URL.Path, "error", err)
-		body = ErrorBody{Code: domain.KindInternal, Message: "Something went wrong, please try again", RequestID: reqID}
+			"request_id", reqID, "method", r.Method, "path", r.URL.Path, "status", status, "error", err)
+		body = ErrorBody{Code: kind, Message: serverErrorMessage[kind], RequestID: reqID}
 	}
 	if status == http.StatusUnauthorized {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="pms-api"`)
@@ -78,9 +95,22 @@ func WriteError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 	writeJSON(w, status, map[string]any{"error": body})
 }
 
+// classifyServerError tells a timeout (504) and an unreachable dependency (503) apart from a bug (500).
+func classifyServerError(err error) domain.ErrorKind {
+	var netErr *net.OpError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return domain.KindTimeout
+	case errors.As(err, &netErr):
+		return domain.KindUnavailable
+	default:
+		return domain.KindInternal
+	}
+}
+
 // DecodeJSON strictly decodes one JSON object (no unknown fields, max 1 MiB) into dst.
 func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
-	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(ct), "application/json") {
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
 		return domain.InvalidParams("Content-Type must be application/json")
 	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
@@ -105,7 +135,8 @@ func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 			return domain.InvalidParams("Request body could not be read")
 		}
 	}
-	if dec.More() {
+	// Anything after the object, even a stray "}", makes the body invalid.
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return domain.InvalidParams("Request body must contain a single JSON object")
 	}
 	return nil

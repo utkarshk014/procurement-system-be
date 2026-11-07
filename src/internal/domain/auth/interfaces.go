@@ -2,6 +2,7 @@ package domain_auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
 )
@@ -34,6 +35,10 @@ type Repository interface {
 	// returns its user id. It returns NotFound if the token cannot be used.
 	ConsumeRefreshToken(ctx context.Context, jti string) (int64, error)
 	RevokeRefreshToken(ctx context.Context, jti string) error
+	// RevokedBefore returns the owner of a refresh token revoked before cutoff, or a NotFound error.
+	RevokedBefore(ctx context.Context, jti string, cutoff time.Time) (int64, error)
+	// RevokeAllRefreshTokens revokes every live refresh token of a user and returns how many.
+	RevokeAllRefreshTokens(ctx context.Context, userID int64) (int64, error)
 	DeleteExpiredRefreshTokens(ctx context.Context) (int64, error)
 }
 

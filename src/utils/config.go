@@ -3,6 +3,8 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -32,8 +34,8 @@ type Config struct {
 	AccessTokenTTL   time.Duration `env:"ACCESS_TOKEN_TTL" envDefault:"15m"`
 	RefreshTokenTTL  time.Duration `env:"REFRESH_TOKEN_TTL" envDefault:"720h"`
 
-	// TrustProxy reads the client IP from X-Forwarded-For; enable only behind a proxy that sets it.
-	TrustProxy bool `env:"TRUST_PROXY" envDefault:"false"`
+	// TrustedProxies are proxy CIDRs whose X-Forwarded-For is believed; empty means use the TCP peer.
+	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
 
 	CORSAllowedOrigins []string      `env:"CORS_ALLOWED_ORIGINS" envSeparator:"," envDefault:"http://localhost:3000"`
 	RequestTimeout     time.Duration `env:"REQUEST_TIMEOUT" envDefault:"15s"`
@@ -63,7 +65,33 @@ func NewConfig() (*Config, error) {
 	if cfg.JWTAccessSecret == cfg.JWTRefreshSecret {
 		return nil, fmt.Errorf("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must differ")
 	}
+	if err := cfg.checkRanges(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+// checkRanges rejects values that would silently break every request or token.
+func (c *Config) checkRanges() error {
+	switch {
+	case c.HTTPPort < 1 || c.HTTPPort > 65535:
+		return fmt.Errorf("HTTP_PORT must be between 1 and 65535")
+	case c.RequestTimeout <= 0:
+		return fmt.Errorf("REQUEST_TIMEOUT must be positive")
+	case c.AccessTokenTTL <= 0:
+		return fmt.Errorf("ACCESS_TOKEN_TTL must be positive")
+	case c.RefreshTokenTTL <= c.AccessTokenTTL:
+		return fmt.Errorf("REFRESH_TOKEN_TTL must be longer than ACCESS_TOKEN_TTL")
+	case c.LoginRateLimit <= 0:
+		return fmt.Errorf("LOGIN_RATE_LIMIT_PER_MINUTE must be positive")
+	}
+	for i, cidr := range c.TrustedProxies {
+		c.TrustedProxies[i] = strings.TrimSpace(cidr) // "a, b" lists keep the space otherwise
+		if _, err := netip.ParsePrefix(c.TrustedProxies[i]); err != nil {
+			return fmt.Errorf("TRUSTED_PROXIES: %q is not a CIDR such as 10.0.0.0/8: %w", cidr, err)
+		}
+	}
+	return nil
 }
 
 // Location returns the parsed DefaultTimeZone.

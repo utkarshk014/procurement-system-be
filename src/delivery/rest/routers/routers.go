@@ -32,7 +32,7 @@ func SetMetaRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_
 func SetAuthRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_auth.AuthController, loginPerMinute int, logger *slog.Logger) {
 	r.Route("/api/v1/auth", func(r chi.Router) {
 		loginLimit := httprate.Limit(loginPerMinute, time.Minute,
-			httprate.WithKeyFuncs(httprate.KeyByIP),
+			httprate.WithKeyFuncs(func(r *http.Request) (string, error) { return rest_utils.ClientIP(r), nil }),
 			httprate.WithLimitHandler(func(w http.ResponseWriter, r *http.Request) {
 				rest_utils.WriteError(w, r, logger, domain.RateLimited("Too many login attempts, try again in a minute"))
 			}))

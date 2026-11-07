@@ -3,6 +3,7 @@ package routers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -37,14 +38,19 @@ func (stubAuthUsecase) Authenticate(context.Context, string) (*domain.Principal,
 	return nil, domain.Unauthorized("no")
 }
 
-func TestLoginIsRateLimitedWithJSONButRefreshIsNot(t *testing.T) {
+func TestLoginRateLimitIgnoresSpoofedIPsAndRefreshIsNotLimited(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	r := chi.NewRouter()
 	SetAuthRoutes(r, middlewares.NewAuthMiddleware(stubAuthUsecase{}, logger), stubAuthController{}, 2, logger)
 
+	n := 0
 	post := func(path string) *httptest.ResponseRecorder {
+		n++
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
 		req.RemoteAddr = "203.0.113.7:5000"
+		// A fresh spoofed client IP on every request must not buy a fresh limit bucket.
+		req.Header.Set("True-Client-IP", fmt.Sprintf("198.51.100.%d", n))
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("192.0.2.%d", n))
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, req)
 		return rec

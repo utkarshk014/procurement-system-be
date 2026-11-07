@@ -42,7 +42,9 @@ func (f *fakeRepo) CheckWithFunction(context.Context, *domain_finyear.FinancialY
 	}
 	return f.check, nil
 }
-func (f *fakeRepo) Create(_ context.Context, fy *domain_finyear.FinancialYear) error {
+func (f *fakeRepo) Create(ctx context.Context, fy *domain_finyear.FinancialYear, decideCurrent domain_finyear.CurrentRule) error {
+	_, err := f.Current(ctx)
+	fy.IsCurrent = decideCurrent(err == nil)
 	f.created = fy
 	if fy.IsCurrent {
 		for i := range f.years {
@@ -136,15 +138,38 @@ func TestFirstYearIsCurrentEvenIfToldOtherwise(t *testing.T) {
 	assert.True(t, fy.IsCurrent, "with no current year the company step could never start")
 }
 
-func TestSecondYearIsNotCurrentUnlessAsked(t *testing.T) {
+// The review's click order: previous year first, then the current one, which must take over.
+func TestCurrentYearBecomesCurrentEvenWhenPreviousWasCreatedFirst(t *testing.T) {
+	repo := &fakeRepo{}
+	uc := newAt(repo, 2026, time.November, 2)
+	prev, err := uc.Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2025-2026"})
+	require.NoError(t, err)
+	assert.True(t, prev.IsCurrent, "first year is current while none is")
+
+	cur, err := uc.Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2026-2027"})
+	require.NoError(t, err)
+	assert.True(t, cur.IsCurrent, "today's year becomes current by default")
+	now, err := repo.Current(ctx())
+	require.NoError(t, err)
+	assert.Equal(t, "2026-2027", now.FinYr)
+}
+
+func TestPreviousYearAddedLaterStaysNotCurrent(t *testing.T) {
 	repo := &fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2026-2027", IsCurrent: true}}}
 	fy, err := newAt(repo, 2026, time.November, 2).Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2025-2026"})
 	require.NoError(t, err)
 	assert.False(t, fy.IsCurrent)
+}
 
-	yes := true
-	repo2 := &fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2025-2026", IsCurrent: true}}}
-	fy, err = newAt(repo2, 2026, time.November, 2).Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2026-2027", IsCurrent: &yes})
+func TestExplicitChoiceWinsOnceAYearIsCurrent(t *testing.T) {
+	no, yes := false, true
+	repo := &fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2025-2026", IsCurrent: true}}}
+	fy, err := newAt(repo, 2026, time.November, 2).Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2026-2027", IsCurrent: &no})
+	require.NoError(t, err)
+	assert.False(t, fy.IsCurrent)
+
+	repo2 := &fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2026-2027", IsCurrent: true}}}
+	fy, err = newAt(repo2, 2026, time.November, 2).Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2025-2026", IsCurrent: &yes})
 	require.NoError(t, err)
 	assert.True(t, fy.IsCurrent)
 }

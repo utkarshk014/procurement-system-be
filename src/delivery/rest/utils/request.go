@@ -6,17 +6,26 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
 	domain_auth "github.com/utkarshk014/procurement-system-be/src/internal/domain/auth"
 )
 
-// ClientMeta returns the caller's IP (proxy-aware when TRUST_PROXY is on) and user agent.
-func ClientMeta(r *http.Request) domain_auth.ClientMeta {
+// ClientIP is the verified client IP set by the client-IP middleware, else the TCP peer.
+func ClientIP(r *http.Request) string {
+	if ip := middleware.GetClientIP(r.Context()); ip != "" {
+		return ip
+	}
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		ip = r.RemoteAddr
+		return r.RemoteAddr
 	}
-	return domain_auth.ClientMeta{IP: ip, UserAgent: r.UserAgent()}
+	return ip
+}
+
+// ClientMeta returns the caller's verified IP and user agent.
+func ClientMeta(r *http.Request) domain_auth.ClientMeta {
+	return domain_auth.ClientMeta{IP: ClientIP(r), UserAgent: r.UserAgent()}
 }
 
 // IntParam reads a positive integer URL parameter, or returns NotFound.

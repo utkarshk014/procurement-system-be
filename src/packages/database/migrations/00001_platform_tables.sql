@@ -44,7 +44,7 @@ CREATE INDEX sys_user_tenant_idx ON pms.sys_user (tenant_id);
 
 -- Every refresh token issued, keyed by its JWT id (jti). Access tokens are
 -- not stored; a refresh token only works while its row is unrevoked, so
--- logout and "log out everywhere" take effect immediately.
+-- logout and reuse detection (revoke all of a user's tokens) take effect immediately.
 CREATE TABLE pms.sys_refresh_token
 (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

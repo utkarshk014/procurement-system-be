@@ -40,6 +40,9 @@ func run() error {
 		return err
 	}
 	defer dbm.Close()
+	for key, err := range dbm.Unreachable() {
+		log.Warn("tenant database unreachable at startup, its requests will fail until it is back", "db_key", key, "error", err)
+	}
 
 	repos := repository.NewRepositories(dbm)
 	usecases := usecase.NewUsecases(cfg, repos, dbm, log)
@@ -65,23 +68,22 @@ func run() error {
 	return nil
 }
 
-// cleanupRefreshTokens deletes expired refresh tokens once an hour.
+// cleanupRefreshTokens deletes expired refresh tokens at startup and then hourly.
 func cleanupRefreshTokens(ctx context.Context, repos *repository.Repositories, log *slog.Logger) {
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	for {
+		n, err := repos.Auth.DeleteExpiredRefreshTokens(ctx)
+		switch {
+		case err != nil:
+			log.Warn("refresh token cleanup failed", "error", err)
+		case n > 0:
+			log.Info("deleted expired refresh tokens", "count", n)
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			n, err := repos.Auth.DeleteExpiredRefreshTokens(ctx)
-			if err != nil {
-				log.Warn("refresh token cleanup failed", "error", err)
-				continue
-			}
-			if n > 0 {
-				log.Info("deleted expired refresh tokens", "count", n)
-			}
 		}
 	}
 }

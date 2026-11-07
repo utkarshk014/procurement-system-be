@@ -22,6 +22,9 @@ type Repository interface {
 	Current(ctx context.Context) (*FinancialYear, error)
 	// CheckWithFunction calls pms.finyr_master_validate and returns its message.
 	CheckWithFunction(ctx context.Context, fy *FinancialYear) (string, error)
-	// Create re-checks and inserts via pms.mst_finyr_insert in one locked transaction.
-	Create(ctx context.Context, fy *FinancialYear) error
+	// Create sets fy.IsCurrent via decideCurrent, re-checks and inserts, all under one lock.
+	Create(ctx context.Context, fy *FinancialYear, decideCurrent CurrentRule) error
 }
+
+// CurrentRule decides whether a new year is current, given whether any year already is.
+type CurrentRule func(hasCurrent bool) bool

@@ -60,10 +60,15 @@ func (uc *finYearUsecase) Validate(ctx context.Context, in domain_finyear.Financ
 	if _, err := domain.TenantPrincipal(ctx); err != nil {
 		return nil, err
 	}
-	fy, err := uc.prepare(ctx, in)
+	fy, decideCurrent, err := uc.prepare(in)
 	if err != nil {
 		return nil, err
 	}
+	_, err = uc.repo.Current(ctx)
+	if err != nil && !domain.IsKind(err, domain.KindNotFound) {
+		return nil, err
+	}
+	fy.IsCurrent = decideCurrent(err == nil)
 	msg, err := uc.repo.CheckWithFunction(ctx, fy)
 	if err != nil {
 		return nil, err
@@ -79,11 +84,11 @@ func (uc *finYearUsecase) Create(ctx context.Context, in domain_finyear.Financia
 	if err != nil {
 		return nil, err
 	}
-	fy, err := uc.prepare(ctx, in)
+	fy, decideCurrent, err := uc.prepare(in)
 	if err != nil {
 		return nil, err
 	}
-	if err := uc.repo.Create(ctx, fy); err != nil {
+	if err := uc.repo.Create(ctx, fy, decideCurrent); err != nil {
 		return nil, err
 	}
 	uc.logger.InfoContext(ctx, "financial year created",
@@ -105,24 +110,24 @@ func (uc *finYearUsecase) Current(ctx context.Context) (*domain_finyear.Financia
 	return uc.repo.Current(ctx)
 }
 
-// prepare applies the walkthrough's rules, fills the standard dates and decides is_current.
-func (uc *finYearUsecase) prepare(ctx context.Context, in domain_finyear.FinancialYearInput) (*domain_finyear.FinancialYear, error) {
+// prepare applies the walkthrough's rules, fills the standard dates and returns the is_current rule.
+func (uc *finYearUsecase) prepare(in domain_finyear.FinancialYearInput) (*domain_finyear.FinancialYear, domain_finyear.CurrentRule, error) {
 	in.FinYr = strings.TrimSpace(in.FinYr)
 	in.StartDate = strings.TrimSpace(in.StartDate)
 	in.EndDate = strings.TrimSpace(in.EndDate)
 	if err := usecase_common.ValidateStruct(in); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	startYear, ok := domain_finyear.ParseFinYr(in.FinYr)
 	if !ok {
-		return nil, domain.Validation(domain.FieldError{
+		return nil, nil, domain.Validation(domain.FieldError{
 			Field: "finyr", Message: "must look like 2026-2027 (two consecutive years)",
 		})
 	}
 	current, previous := uc.allowedStartYears()
 	if startYear != current && startYear != previous {
-		return nil, domain.Validation(domain.FieldError{
+		return nil, nil, domain.Validation(domain.FieldError{
 			Field: "finyr",
 			Message: "must be the current (" + domain_finyear.FinYrLabel(current) +
 				") or previous (" + domain_finyear.FinYrLabel(previous) + ") financial year",
@@ -139,21 +144,23 @@ func (uc *finYearUsecase) prepare(ctx context.Context, in domain_finyear.Financi
 		fields = append(fields, domain.FieldError{Field: "finyr_end_date", Message: "must be " + wantEnd + " (31 March)"})
 	}
 	if len(fields) > 0 {
-		return nil, domain.Validation(fields...)
+		return nil, nil, domain.Validation(fields...)
 	}
 
-	// While no year is current the new one must be, or the company step could never start.
-	_, err := uc.repo.Current(ctx)
-	hasCurrent := err == nil
-	if err != nil && !domain.IsKind(err, domain.KindNotFound) {
-		return nil, err
-	}
-	isCurrent := !hasCurrent || (in.IsCurrent != nil && *in.IsCurrent)
+	fy := &domain_finyear.FinancialYear{FinYr: in.FinYr, StartDate: wantStart, EndDate: wantEnd}
+	return fy, currentRule(in.IsCurrent, startYear == current), nil
+}
 
-	return &domain_finyear.FinancialYear{
-		FinYr:     in.FinYr,
-		StartDate: wantStart,
-		EndDate:   wantEnd,
-		IsCurrent: isCurrent,
-	}, nil
+// currentRule: with no current year the new one must be; else an explicit choice wins; else today's year is current.
+func currentRule(explicit *bool, isTodaysYear bool) domain_finyear.CurrentRule {
+	return func(hasCurrent bool) bool {
+		switch {
+		case !hasCurrent:
+			return true
+		case explicit != nil:
+			return *explicit
+		default:
+			return isTodaysYear
+		}
+	}
 }

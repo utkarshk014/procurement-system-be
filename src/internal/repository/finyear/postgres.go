@@ -103,7 +103,7 @@ func checkWithFunction(ctx context.Context, q pgutil.Querier, fy *domain_finyear
 	return msg, nil
 }
 
-func (r *postgresFinYearRepository) Create(ctx context.Context, fy *domain_finyear.FinancialYear) error {
+func (r *postgresFinYearRepository) Create(ctx context.Context, fy *domain_finyear.FinancialYear, decideCurrent domain_finyear.CurrentRule) error {
 	pool, err := pgutil.TenantPool(ctx, r.pools)
 	if err != nil {
 		return err
@@ -112,6 +112,12 @@ func (r *postgresFinYearRepository) Create(ctx context.Context, fy *domain_finye
 		if _, err := tx.Exec(ctx, lockSQL); err != nil {
 			return domain.Internal("Could not lock financial years", err)
 		}
+		var hasCurrent bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pms.finyr_master WHERE finyr_is_current)`).Scan(&hasCurrent); err != nil {
+			return domain.Internal("Could not check current financial year", err)
+		}
+		fy.IsCurrent = decideCurrent(hasCurrent)
 		msg, err := checkWithFunction(ctx, tx, fy)
 		if err != nil {
 			return err

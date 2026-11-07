@@ -36,9 +36,7 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 	r := chi.NewRouter()
 
 	r.Use(middlewares.RequestID)
-	if cfg.TrustProxy {
-		r.Use(middleware.RealIP)
-	}
+	r.Use(clientIP(cfg.TrustedProxies))
 	r.Use(middlewares.RequestLogger(logger))
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(cfg.RequestTimeout))
@@ -64,9 +62,17 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 		rest_utils.WriteError(w, r, logger, domain.NotFound("Route not found"))
 	})
 	r.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
-		rest_utils.WriteError(w, r, logger, domain.InvalidParams("Method not allowed"))
+		rest_utils.WriteError(w, r, logger, domain.MethodNotAllowed("Method not allowed"))
 	})
 	return r
+}
+
+// clientIP trusts X-Forwarded-For only when the TCP peer is a listed proxy, so clients cannot spoof their IP.
+func clientIP(trustedProxies []string) func(http.Handler) http.Handler {
+	if len(trustedProxies) == 0 {
+		return middleware.ClientIPFromRemoteAddr
+	}
+	return middleware.ClientIPFromXFF(trustedProxies...)
 }
 
 // NewRestDelivery builds the HTTP server.

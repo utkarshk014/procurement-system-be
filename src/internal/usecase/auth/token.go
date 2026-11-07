@@ -81,6 +81,9 @@ func (j *jwtIssuer) Issue(p *domain.Principal, typ domain_auth.TokenType) (strin
 	return signed, claims, nil
 }
 
+// clockLeeway tolerates small clock differences between API instances.
+const clockLeeway = 30 * time.Second
+
 func (j *jwtIssuer) Verify(token string, typ domain_auth.TokenType) (*domain_auth.Claims, error) {
 	secret, _, err := j.secretAndTTL(typ)
 	if err != nil {
@@ -93,6 +96,7 @@ func (j *jwtIssuer) Verify(token string, typ domain_auth.TokenType) (*domain_aut
 		jwt.WithIssuer(j.issuer),
 		jwt.WithExpirationRequired(),
 		jwt.WithIssuedAt(),
+		jwt.WithLeeway(clockLeeway),
 		jwt.WithTimeFunc(j.now),
 	)
 	if err != nil {

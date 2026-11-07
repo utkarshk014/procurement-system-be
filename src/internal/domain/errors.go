@@ -17,6 +17,9 @@ const (
 	KindNotFound      ErrorKind = "not_found"
 	KindConflict      ErrorKind = "conflict"
 	KindRateLimited   ErrorKind = "rate_limited"
+	KindMethod        ErrorKind = "method_not_allowed"
+	KindUnavailable   ErrorKind = "service_unavailable"
+	KindTimeout       ErrorKind = "timeout"
 	KindInternal      ErrorKind = "internal_error"
 )
 
@@ -82,6 +85,10 @@ func Conflict(msg string, fields ...FieldError) error {
 
 func RateLimited(msg string) error {
 	return &AppError{Kind: KindRateLimited, Message: msg}
+}
+
+func MethodNotAllowed(msg string) error {
+	return &AppError{Kind: KindMethod, Message: msg}
 }
 
 // Internal wraps an unexpected failure. The caller only ever sees msg.

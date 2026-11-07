@@ -29,7 +29,8 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 
 `code` is one of `invalid_params` (400), `unauthorized` (401), `forbidden`
 (403), `not_found` (404), `conflict` (409), `validation_failed` (422),
-`rate_limited` (429), `internal_error` (500).
+`method_not_allowed` (405), `rate_limited` (429), `internal_error` (500),
+`service_unavailable` (503, a database is unreachable), `timeout` (504).
 
 **Auth**: `Authorization: Bearer <access_token>` on every route except
 `/healthz`, `/auth/login`, `/auth/refresh`, `/auth/logout`.
@@ -86,6 +87,8 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 ```
 
 `401` wrong email or password (same message for both) · `403` account or tenant disabled · `422` missing fields · `429` too many attempts from this IP.
+
+A disabled user or suspended tenant gets `401` on every later request, and refresh stops working.
 
 Access token payload (decode on the frontend; the server never trusts it without verifying):
 
@@ -179,7 +182,7 @@ or not a refresh token.
 | `finyr` | ✓ | `YYYY-YYYY`, consecutive years, the current or previous financial year |
 | `finyr_st_date` | | if sent, must be 1 April of the first year |
 | `finyr_end_date` | | if sent, must be 31 March of the second year |
-| `finyr_is_current` | | ignored (forced `true`) while no year is current; otherwise default `false`. `true` un-marks the others |
+| `finyr_is_current` | | ignored (forced `true`) while no year is current; otherwise defaults to `true` for today's financial year and `false` for the previous one. `true` un-marks the others |
 
 Create: `201` the year · Validate: `200 { "valid": true, "financial_year": {…} }`
 `409` already exists / overlaps · `422` field errors.
@@ -201,7 +204,7 @@ Create: `201` the year · Validate: `200 { "valid": true, "financial_year": {…
   "mobile": "9876543210", "email": "office@esis.in", "website": "esis.in",
   "header_1": "Head Office", "header_2": "", "shortname": "ESIS",
   "fin_st_dt": "2026-04-01",
-  "time_zone": "2026-11-07T12:56:10.881627+05:30",
+  "time_zone": "2026-11-07T07:26:10.881627Z",
   "rec_created_at": "2026-11-07T07:26:10.881268Z"
 }
 ```
