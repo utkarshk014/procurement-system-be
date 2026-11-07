@@ -1,5 +1,37 @@
-# Render Blueprint for the dev API. Secrets marked sync: false are entered in the Render dashboard, never here.
+# Render Blueprint for the dev API and the web frontend. Secrets marked sync: false are entered in the Render dashboard, never here.
 services:
+  # The React frontend (procurement-system-fe), served as static files from Render's CDN; it does not sleep.
+  - type: web
+    name: pms-web
+    runtime: static
+    repo: https://github.com/utkarshk014/procurement-system-fe
+    branch: main
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    autoDeploy: true
+    pullRequestPreviewsEnabled: false
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Baked into the bundle at build time; change it here and redeploy to point at another API.
+      - key: VITE_API_URL
+        value: https://pms-api-bcv8.onrender.com
+    # Single-page app: every path serves index.html so deep links like /company survive a refresh.
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+
   - type: web
     name: pms-api
     runtime: docker
