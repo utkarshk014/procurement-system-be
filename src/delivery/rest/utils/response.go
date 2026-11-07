@@ -97,15 +97,23 @@ func WriteError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err
 
 // classifyServerError tells a timeout (504) and an unreachable dependency (503) apart from a bug (500).
 func classifyServerError(err error) domain.ErrorKind {
-	var netErr *net.OpError
+	var netErr net.Error // refused connections and DNS failures (a stopped container's host stops resolving)
+	var dbErr interface{ SQLState() string }
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return domain.KindTimeout
 	case errors.As(err, &netErr):
 		return domain.KindUnavailable
+	case errors.As(err, &dbErr) && isUnavailableSQLState(dbErr.SQLState()):
+		return domain.KindUnavailable
 	default:
 		return domain.KindInternal
 	}
+}
+
+// isUnavailableSQLState covers Postgres connection errors (08) and shutdown/crash/startup (57P01-57P03).
+func isUnavailableSQLState(code string) bool {
+	return strings.HasPrefix(code, "08") || code == "57P01" || code == "57P02" || code == "57P03"
 }
 
 // DecodeJSON strictly decodes one JSON object (no unknown fields, max 1 MiB) into dst.

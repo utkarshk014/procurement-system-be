@@ -46,6 +46,12 @@ func TestDecodeJSONIsStrict(t *testing.T) {
 	}
 }
 
+// sqlStateErr mimics a driver error that exposes its SQLSTATE, as pgconn.PgError does.
+type sqlStateErr string
+
+func (e sqlStateErr) Error() string    { return "db error " + string(e) }
+func (e sqlStateErr) SQLState() string { return string(e) }
+
 func writeErr(err error) (int, map[string]any) {
 	rec := httptest.NewRecorder()
 	WriteError(rec, httptest.NewRequest(http.MethodGet, "/", nil), slog.New(slog.NewTextHandler(io.Discard, nil)), err)
@@ -64,6 +70,18 @@ func TestWriteErrorSeparatesOutagesFromBugs(t *testing.T) {
 	code, body = writeErr(down)
 	assert.Equal(t, http.StatusServiceUnavailable, code)
 	assert.Equal(t, "service_unavailable", body["code"])
+
+	// Inside Docker or Kubernetes a stopped database's hostname stops resolving.
+	unresolvable := domain.Internal("Database is unreachable", fmt.Errorf("hostname resolving error: %w",
+		&net.DNSError{Err: "no such host", Name: "pms-db", IsNotFound: true}))
+	code, _ = writeErr(unresolvable)
+	assert.Equal(t, http.StatusServiceUnavailable, code)
+
+	// Open pooled connections get 57P01 when Postgres shuts down; other database errors stay 500.
+	code, _ = writeErr(domain.Internal("Database is unreachable", sqlStateErr("57P01")))
+	assert.Equal(t, http.StatusServiceUnavailable, code)
+	code, _ = writeErr(domain.Internal("Could not save", sqlStateErr("23505")))
+	assert.Equal(t, http.StatusInternalServerError, code)
 
 	code, body = writeErr(domain.Internal("Could not save", fmt.Errorf("boom")))
 	require.Equal(t, http.StatusInternalServerError, code)

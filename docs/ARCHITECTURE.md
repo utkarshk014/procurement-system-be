@@ -249,7 +249,7 @@ only place that maps them to HTTP.
 | `conflict` | 409 | Duplicate financial year / overlap / tenant code / email / db_key; company before financial year |
 | `validation_failed` | 422 | Field rules failed (with `fields[]`) |
 | `internal_error` | 500 | Anything unexpected; logged with cause, caller sees a generic message |
-| `service_unavailable` | 503 | A database could not be reached |
+| `service_unavailable` | 503 | A database could not be reached, or Postgres is shutting down or starting up |
 | `timeout` | 504 | The request ran past `REQUEST_TIMEOUT` (e.g. a stuck database) |
 
 ## 9. Open items for the DBA
