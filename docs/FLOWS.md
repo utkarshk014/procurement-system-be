@@ -1,0 +1,185 @@
+# End-to-end flows
+
+Every flow below is exercised by `src/delivery/rest/e2e_test.go` against a real
+PostgreSQL 11 loaded with the DBA's SQL (`db/legacy`).
+
+## 0. The big picture
+
+```mermaid
+flowchart LR
+    A["1 · Bootstrap<br/>CLI creates platform admin"] --> B["2 · Platform admin logs in"]
+    B --> C["3 · Create tenant<br/>ESIS → db_key esis"]
+    C --> D["4 · Create tenant admin"]
+    D --> E["5 · Tenant admin logs in"]
+    E --> S{"GET /setup/status<br/>next_step?"}
+    S -- financial_year --> F["6 · Wizard step 1<br/>Financial year"]
+    F --> S
+    S -- company --> G["7 · Wizard step 2<br/>Company (sl = 1)"]
+    G --> S
+    S -- done --> H["8 · App<br/>(masters next)"]
+    E -.-> R["Refresh / logout<br/>any time"]
+```
+
+## 1. Bootstrap (one time, from a terminal)
+
+```mermaid
+sequenceDiagram
+    actor Op as Operator
+    participant CLI as cmd/admin
+    participant UC as usecase/auth
+    participant DB as Control DB
+    Op->>CLI: migrate
+    CLI->>DB: goose up → pms.sys_tenant, sys_user, sys_refresh_token
+    Op->>CLI: create-platform-admin -email … -name …
+    CLI->>Op: password prompt (no echo)
+    CLI->>UC: CreateUser(role=platform_admin, tenant=nil)
+    UC->>UC: validate · lower-case email · argon2id hash
+    UC->>DB: INSERT sys_user
+    CLI-->>Op: created platform admin (id 1)
+```
+
+There is no sign-up endpoint; every other account is created by an admin.
+
+## 2. Request lifecycle (every protected call)
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant MW as Middlewares
+    participant UC as usecase/auth
+    participant DB as Control DB
+    participant H as Controller → Use case → Repository
+    FE->>MW: Authorization: Bearer <access token>
+    MW->>MW: RequestID · Logger · Recover · Timeout · CORS
+    MW->>UC: Authenticate(token)
+    UC->>UC: verify HS256 · issuer · expiry · typ=access
+    UC->>DB: GetPrincipal(sub) — user active? tenant active?
+    DB-->>UC: Principal {user, role, tenant, db_key}
+    UC-->>MW: Principal → request context
+    MW->>MW: RequireRole (tenant routes also check the tenant in the use case)
+    MW->>H: handler (uses the tenant's database via db_key)
+    H-->>FE: {"data": …} or {"error": {code, message, fields[]}}
+```
+
+## 3. Login, refresh, logout
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant API as /api/v1/auth
+    participant UC as usecase/auth
+    participant DB as Control DB
+    FE->>API: POST /login {email, password}
+    UC->>DB: user by email
+    UC->>UC: argon2id compare (same cost if user missing)
+    UC->>DB: GetPrincipal (active user + active tenant)
+    UC->>UC: sign access (15m) + refresh (30d, new jti)
+    UC->>DB: INSERT sys_refresh_token(jti)
+    API-->>FE: {access_token, refresh_token, expires_in, user}
+    Note over FE: keep tokens; send access token as Bearer
+    FE->>API: POST /refresh {refresh_token}  (when access expires)
+    UC->>UC: verify refresh token (other secret, typ=refresh)
+    UC->>DB: UPDATE … SET revoked_at=now() WHERE jti=… AND not revoked RETURNING user_id
+    UC-->>FE: new pair (old refresh token is now dead)
+    FE->>API: POST /logout {refresh_token}
+    UC->>DB: revoke jti
+    API-->>FE: 204
+```
+
+## 4. Tenant onboarding (platform admin)
+
+```mermaid
+sequenceDiagram
+    actor PA as Platform admin
+    participant API as /api/v1/admin
+    participant UC as usecase/tenant
+    participant DB as Control DB
+    PA->>API: POST /tenants {code:"esis", name, db_key:"esis"}
+    UC->>UC: upper-case code · validate · db_key in TENANT_DATABASES?
+    UC->>DB: INSERT sys_tenant (code & db_key unique)
+    API-->>PA: 201 tenant {id:1, code:"ESIS"}
+    PA->>API: POST /tenants/1/admins {email, full_name, password}
+    UC->>DB: tenant exists & active?
+    UC->>UC: CreateUser(role=tenant_admin, tenant=1)
+    API-->>PA: 201 user (no password hash)
+```
+
+## 5. Setup wizard — status
+
+`GET /api/v1/setup/status` tells the frontend which screen to show:
+
+| State | Response |
+|---|---|
+| Nothing set up | `{financial_year_done:false, company_done:false, next_step:"financial_year"}` |
+| Year done | `{financial_year_done:true, current_financial_year:"2026-2027", company_done:false, next_step:"company"}` |
+| Both done | `{…, company_done:true, next_step:"done"}` |
+
+## 6. Wizard step 1 — financial year
+
+```mermaid
+sequenceDiagram
+    participant FE as Financial year form
+    participant UC as usecase/finyear
+    participant R as repository/finyear
+    participant T as Tenant DB
+    FE->>UC: GET /financial-years/options
+    UC-->>FE: [{2026-2027, 2026-04-01 → 2027-03-31, current}, {2025-2026, …, previous}]
+    FE->>UC: POST /financial-years {finyr:"2026-2027"}
+    UC->>UC: format YYYY-YYYY (consecutive) · current or previous year only
+    UC->>UC: dates = 1 Apr → 31 Mar (given dates must match)
+    UC->>R: Current() — none yet? then is_current = true
+    UC->>R: Create
+    R->>T: BEGIN · pg_advisory_xact_lock('pms.finyr_master')
+    R->>T: SELECT pms.finyr_master_validate(…)  → 'SUCCESS' or message
+    R->>T: CALL pms.mst_finyr_insert(…)  (un-marks other current years)
+    R->>T: COMMIT
+    UC-->>FE: 201 {finyr, finyr_st_date, finyr_end_date, finyr_is_current, rec_created_at}
+```
+
+"Today" is taken in `DEFAULT_TIMEZONE` (Asia/Kolkata). The walkthrough's
+example holds: configured on 02-11-2026 the choices are 2026-2027 and 2025-2026.
+
+DBA messages are mapped to fields: *already exists* and *overlap* → `409` on
+`finyr`; missing dates / end before start → `422` on the date fields.
+
+## 7. Wizard step 2 — company (single record, sl = 1)
+
+```mermaid
+sequenceDiagram
+    participant FE as Company form
+    participant UC as usecase/company
+    participant R as repository/company
+    participant T as Tenant DB
+    FE->>UC: PUT /company {whole form, no sl}
+    UC->>UC: current financial year exists? else 409 "Create the financial year first"
+    UC->>UC: Normalize · fin_st_dt defaults to the year's start · Check (all errors at once)
+    UC->>R: Save
+    R->>T: BEGIN · pg_advisory_xact_lock('pms.company_master')
+    R->>T: SELECT time_zone … WHERE sl = 1 FOR UPDATE
+    alt row exists
+        R->>R: keep stored time_zone (update)
+    else no row
+        R->>R: time_zone = now in Asia/Kolkata (create)
+    end
+    R->>T: company_master_validate(1, …)
+    R->>T: CALL pms.company_master_insert(1, …)  → insert or ON CONFLICT update
+    R->>T: COMMIT
+    UC-->>FE: 201 first time · 200 afterwards — same sl, time_zone, rec_created_at
+```
+
+`POST /company/validate` runs the same checks without saving. `GET /company`
+returns the record (404 before the first save). `PUT` replaces every editable
+field: send the full form; empty optional fields become `NULL`.
+
+## 8. What the frontend needs to know
+
+| Need | How |
+|---|---|
+| Who is logged in | Decode the access token (`role`, `name`, `email`, `tid`, `tcode`) or `GET /auth/me` |
+| Which screen | `platform_admin` → tenant admin screens. `tenant_admin` → `GET /setup/status` → `next_step` |
+| Year dropdown | `GET /financial-years/options` (`exists:true` → already created) |
+| Company form prefill | `GET /company` (404 = empty form) |
+| State dropdown | `GET /meta/indian-states` |
+| Token expired | Any `401` → `POST /auth/refresh` once and retry; if that 401s, go to login |
+| Field errors | `error.fields[]` → show `message` under the input named `field` |
+| Support | Every response has `X-Request-Id`; errors include `request_id` |

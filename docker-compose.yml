@@ -1,0 +1,22 @@
+# Local Postgres matching production (PostgreSQL 11), pre-loaded with the
+# DBA's pms schema objects from db/legacy.
+services:
+  postgres:
+    image: postgres:11-alpine
+    environment:
+      POSTGRES_USER: pms
+      POSTGRES_PASSWORD: pms
+      POSTGRES_DB: esispms
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db/legacy:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pms -d esispms"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

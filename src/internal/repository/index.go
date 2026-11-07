@@ -1,0 +1,32 @@
+// Package repository wires every repository implementation.
+package repository
+
+import (
+	domain_auth "github.com/utkarshk014/procurement-system-be/src/internal/domain/auth"
+	domain_company "github.com/utkarshk014/procurement-system-be/src/internal/domain/company"
+	domain_finyear "github.com/utkarshk014/procurement-system-be/src/internal/domain/finyear"
+	domain_tenant "github.com/utkarshk014/procurement-system-be/src/internal/domain/tenant"
+	repository_auth "github.com/utkarshk014/procurement-system-be/src/internal/repository/auth"
+	repository_company "github.com/utkarshk014/procurement-system-be/src/internal/repository/company"
+	repository_finyear "github.com/utkarshk014/procurement-system-be/src/internal/repository/finyear"
+	repository_tenant "github.com/utkarshk014/procurement-system-be/src/internal/repository/tenant"
+	"github.com/utkarshk014/procurement-system-be/src/packages/database"
+)
+
+// Repositories groups every repository the use cases depend on.
+type Repositories struct {
+	Auth          domain_auth.Repository
+	Tenant        domain_tenant.Repository
+	FinancialYear domain_finyear.Repository
+	Company       domain_company.Repository
+}
+
+// NewRepositories puts platform data in the control DB and business data in each tenant's DB.
+func NewRepositories(dbm *database.Manager) *Repositories {
+	return &Repositories{
+		Auth:          repository_auth.NewPostgresAuthRepository(dbm.Control()),
+		Tenant:        repository_tenant.NewPostgresTenantRepository(dbm.Control()),
+		FinancialYear: repository_finyear.NewPostgresFinYearRepository(dbm),
+		Company:       repository_company.NewPostgresCompanyRepository(dbm),
+	}
+}
