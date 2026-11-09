@@ -298,5 +298,5 @@ only place that maps them to HTTP.
 7. `mst_trust_validate` reads `pms.mst_fin_year`, which does not exist (`finyr_master`); `mst_trust_insert` is not installed on live (blocks trusts).
 8. A procedure to change the current financial year, e.g. `pms.mst_finyr_set_current(take_finyr)` (blocks `PUT /financial-years/current`).
 9. How many future financial years may be created (built: `FY_FUTURE_YEARS`, default 1).
-10. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; whether it may stay plain text in the table is still open.
+10. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; it is stored as plain text, so encrypt it in the app before mail sending is built.
 11. PAN/GSTIN numbers are optional even when enabled, validated when keyed (Uncle, 9 Nov). Still open: is the enabled date the registration date, and may it be in the future? (built: not after today).

@@ -84,6 +84,12 @@ func TestCheckReportsEveryProblemAtOnce(t *testing.T) {
 	assert.Equal(t, "must be an Indian state or union territory", f["state"])
 }
 
+func TestCheckRejectsMobileWithNoDigits(t *testing.T) {
+	in := validInput()
+	in.Mobile = "abc"
+	assert.Equal(t, "must be a 10-digit Indian mobile number", checkFields(in)["mobile"])
+}
+
 func TestCheckEnforcesColumnLimits(t *testing.T) {
 	in := validInput()
 	in.Name = strings.Repeat("N", 301)

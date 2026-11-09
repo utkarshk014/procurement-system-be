@@ -65,6 +65,12 @@ func TestNothingIsMandatory(t *testing.T) {
 	assert.Empty(t, Check(Normalize(validInput()), today))
 }
 
+func TestCheckRejectsMobilesWithNoDigits(t *testing.T) {
+	f := checkFields(domain_taxdetails.TaxDetailsInput{CommMobile: "abc", CommWhatsapp: "--"})
+	assert.Equal(t, "must be a 10-digit Indian mobile number", f["comm_mobile"])
+	assert.Equal(t, "must be a 10-digit Indian mobile number", f["comm_whatsapp"])
+}
+
 func TestCheckReportsEveryProblemAtOnce(t *testing.T) {
 	in := domain_taxdetails.TaxDetailsInput{
 		PAN: "ABC123", GSTIN: "29ABCDE1234F1ZX", GSTINState: "Atlantis",
