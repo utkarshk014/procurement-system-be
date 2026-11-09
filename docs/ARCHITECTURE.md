@@ -172,7 +172,7 @@ There is no public sign-up. The first platform admin is created with the CLI.
 | `pms.finyr_master` | DBA (`gensuperuser`) | Financial years (PK `finyr`, check end ≥ start) | Read with `SELECT`; written only through the procedure |
 | `pms.finyr_master_validate(...)` | DBA | Returns `'SUCCESS'` or a message | Called on validate, and again inside the create transaction |
 | `pms.mst_finyr_insert(...)` | DBA | Insert; `is_current = true` un-marks the others; RAISEs on duplicates | Called for create |
-| `pms.mst_finyr_set_current(take_finyr)` | **Proposed** (written by us, Uncle agreed 9 Nov; he installs it) | Marks one existing year current and un-marks the rest; RAISEs if missing | Called by `PUT /financial-years/current`. Not on live until Uncle installs it |
+| `pms.mst_finyr_set_current(take_finyr)` | DBA (written by us at Uncle's request, installed by him on live 9 Nov) | Marks one existing year current and un-marks the rest; RAISEs if missing | Called by `PUT /financial-years/current` |
 | `pms.company_master` | DBA (`gensuperuser`) | Company details, one row `sl = 1` | Read with `SELECT`; written only through the procedure |
 | `pms.company_master_validate(...)` | DBA | Returns `(is_valid, message)` | Called on validate, and again inside the save transaction |
 | `pms.company_master_insert(...)` | DBA | Upsert by `sl` | Called for every save with `sl = 1`. It does **not** validate, so we always validate first |
@@ -192,8 +192,8 @@ The v1.01 tables (`mst_company_tax_details`, `mst_trust`) and
 `mst_company_tax_details_insert` are copied from `tables_VER_01_1.txt` and the
 procedure file in the v1.01 bundle.
 
-`mst_finyr_set_current` at the end of the file is **proposed**, not Uncle's yet:
-replace it with his installed text before the set-current PR leaves draft.
+`mst_finyr_set_current` at the end of the file is the text Uncle installed on live
+on 9 Nov (we wrote it at his request).
 
 ## 6. Setup wizard
 
@@ -297,7 +297,7 @@ only place that maps them to HTTP.
 2. `company_master.time_zone` is `TIMESTAMPTZ`, so the zone name is lost;
    `VARCHAR` holding `Asia/Kolkata` would keep it.
 3. A `rec_updated_at` column on `company_master`.
-4. Install the proposed `pms.mst_finyr_set_current(take_finyr)` (in `db/legacy`, agreed 9 Nov). There is still no way to edit or delete a year.
+4. Done 9 Nov: `pms.mst_finyr_set_current(take_finyr)` is installed on live. There is still no way to edit or delete a year.
 5. `finyr_master_validate` does not check the `YYYY-YYYY` format, the 1 April–31 March
    dates or the 9-character limit — we enforce them in the API.
 6. Confirm the 1 April rule for `fin_st_dt` and which company fields are mandatory.

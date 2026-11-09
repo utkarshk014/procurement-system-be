@@ -473,9 +473,9 @@ BEGIN
 END;
 $$;
 
--- ---- PROPOSED, not in Uncle's bundle yet: PROC_pms.mst_finyr_set_current
--- Written for Uncle to review and install on live (he agreed on 9 Nov 2026: "go ahead").
--- Replace with his installed text before the PUT /financial-years/current PR leaves draft.
+-- ---- PROC_pms.mst_finyr_set_current
+-- Written by us at Uncle's request ("go ahead", 9 Nov 2026) and installed on live by him
+-- on 9 Nov 2026 as sent (PROC_pms.mst_finyr_set_current.txt).
 CREATE OR REPLACE PROCEDURE pms.mst_finyr_set_current
 (
     take_finyr   VARCHAR
