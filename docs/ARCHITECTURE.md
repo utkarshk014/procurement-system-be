@@ -61,6 +61,7 @@ src/
 │   ├── database/migrate.go              goose, embedded migrations, table pms.sys_schema_migrations
 │   ├── database/migrations/*.sql        our platform tables (pms.sys_*)
 │   ├── validation/india.go              mobile · PIN · PAN · GSTIN(checksum) · email · website · states
+│   ├── validation/gst.go                GST state codes · code → state · PAN inside GSTIN
 │   ├── validation/validator.go          go-playground validator → field violations (all at once)
 │   ├── security/security.go             argon2id hashing, timing-safe "no such user"
 │   └── logger/logger.go                 slog (text locally, JSON in production)
@@ -72,7 +73,11 @@ src/
 │   │   ├── tenant/                      Tenant, inputs, interfaces
 │   │   ├── setup/                       wizard Status and steps
 │   │   ├── finyear/                     FinancialYear, input, options, year maths, DBA-message map
-│   │   └── company/                     Company (sl = 1), CompanyInput, limits, DBA-message map
+│   │   ├── company/                     Company (sl = 1), CompanyInput, limits, DBA-message map
+│   │   ├── taxdetails/                  TaxDetails (sl = 1, Form 3), input, write-only password
+│   │   ├── trust/                       Trust (Form 4), inputs, code rule, DBA-message → field map
+│   │   ├── codelist/                    Place · Branch · Region (Form 5): one Kind per list, Entry, DBA-message map
+│   │   └── institution/                 Institution (Form 5), code rules, full code, filter/page, DBA-message map
 │   ├── usecase/
 │   │   ├── index.go                     builds all use cases
 │   │   ├── common/validate.go           DTO validation → domain.Validation
@@ -80,20 +85,28 @@ src/
 │   │   ├── tenant/tenant.go             create tenant · list · create tenant admin
 │   │   ├── setup/setup.go               next wizard step from year + company state
 │   │   ├── finyear/finyear.go           options · rules · validate · create · list · current
-│   │   └── company/company.go           needs a year · normalise · check · validate · save · get
+│   │   ├── company/company.go           needs a year · normalise · check · validate · save · get
+│   │   ├── taxdetails/taxdetails.go     needs the company · normalise · check (all at once) · save · get
+│   │   ├── trust/trust.go               normalise · check (FY exists, date inside it) · duplicates · validate · create · update
+│   │   ├── codelist/codelist.go         one use case per list: normalise · duplicates · validate · create · list · get
+│   │   └── institution/institution.go   normalise · check (all at once) · lookups exist · next codes · validate · create · list
 │   └── repository/
 │       ├── index.go                     builds all repositories
 │       ├── pgutil/                      Querier, tenant pool lookup, PG error helpers
 │       ├── auth/postgres.go             sys_user · sys_refresh_token
 │       ├── tenant/postgres.go           sys_tenant
 │       ├── finyear/postgres.go          finyr_master + DBA function/procedure, locked txn
-│       └── company/postgres.go          company_master (sl = 1) + DBA function/procedure, locked txn
+│       ├── company/postgres.go          company_master (sl = 1) + DBA function/procedure, locked txn
+│       ├── taxdetails/postgres.go       mst_company_tax_details (sl = 1) + DBA procedure, locked txn
+│       ├── trust/postgres.go            mst_trust + DBA function/procedure, code/description checks in a locked txn
+│       ├── codelist/postgres.go         mst_place / mst_branch / mst_region + DBA function/procedure, locked txn
+│       └── institution/postgres.go      mst_inst + DBA function/procedure, paged search, next numbers, locked txn
 ├── external/doc.go                      placeholder for third-party clients
 └── delivery/rest/
     ├── index.go                         router, middleware chain, http.Server
     ├── routers/routers.go               every route and its guards
     ├── middlewares/                     JWT auth · role/tenant guards · request id · request log
-    ├── controllers/{auth,admin,setup,finyear,company,meta}/
+    ├── controllers/{auth,admin,setup,finyear,company,taxdetails,trust,codelist,institution,meta}/
     └── utils/                           JSON decode (strict), Respond, WriteError
 ```
 
@@ -167,10 +180,16 @@ There is no public sign-up. The first platform admin is created with the CLI.
 |---|---|---|---|
 | `pms.finyr_master` | DBA (`gensuperuser`) | Financial years (PK `finyr`, check end ≥ start) | Read with `SELECT`; written only through the procedure |
 | `pms.finyr_master_validate(...)` | DBA | Returns `'SUCCESS'` or a message | Called on validate, and again inside the create transaction |
-| `pms.mst_finyr_insert(...)` | DBA | Insert; `is_current = true` un-marks the others; RAISEs on duplicates | Called for create. No update procedure exists |
+| `pms.mst_finyr_insert(...)` | DBA | Insert; `is_current = true` un-marks the others; RAISEs on duplicates | Called for create |
+| `pms.mst_finyr_set_current(take_finyr)` | DBA (written by us at Uncle's request, installed by him on live 9 Nov) | Marks one existing year current and un-marks the rest; RAISEs if missing | Called by `PUT /financial-years/current` |
 | `pms.company_master` | DBA (`gensuperuser`) | Company details, one row `sl = 1` | Read with `SELECT`; written only through the procedure |
 | `pms.company_master_validate(...)` | DBA | Returns `(is_valid, message)` | Called on validate, and again inside the save transaction |
 | `pms.company_master_insert(...)` | DBA | Upsert by `sl` | Called for every save with `sl = 1`. It does **not** validate, so we always validate first |
+| `pms.mst_company_tax_details` | DBA (v1.01) | Company tax and contact details (Form 3), one row `sl = 1`, FK to `company_master` | Read with `SELECT` (never the password column's value, only whether it is set); written only through the procedure |
+| `pms.mst_company_tax_details_insert(...)` | DBA (v1.01) | Upsert by `sl`, 12 arguments, replaces every column | Called for every save with `sl = 1`. No validate function exists: every rule is ours |
+| `pms.mst_trust` | DBA (v1.01) | Trusts (Form 4); PK `trust_code` (`^[A-Z]{3}$`), `trust_desc` UNIQUE (case-sensitive) | Read with `SELECT`; written only through the procedure |
+| `pms.mst_trust_validate(...)` | DBA (v1.01) | Returns one row `(is_valid, take_error_msg)`; problems joined by `. ` | Called on validate, and again inside the create/update transaction. Fixed on live by Uncle on 9 Nov (`finyr_master` + `::VARCHAR`) |
+| `pms.mst_trust_insert(...)` | DBA (v1.01) | Upsert by `trust_code`, sets `last_update_at` | Called for create and update. Installed on live 9 Nov 2026 |
 | `pms.sw_config`, `pms.config_sw_insert(...)` | DBA | App settings | Not used yet |
 | `pms.sys_tenant` / `sys_user` / `sys_refresh_token` | Us (migration 00001) | Platform | Tenants, logins, refresh tokens |
 | `pms.sys_schema_migrations` | Us (goose) | Migration bookkeeping | — |
@@ -179,6 +198,28 @@ There is no public sign-up. The first platform admin is created with the CLI.
 PROCUREMENT.ESIS bundle) so local Postgres and the end-to-end test run against
 the exact same functions and procedures. The bundle has no `CREATE TABLE` for
 `finyr_master` / `company_master`; those two are rebuilt from the live catalog.
+
+The v1.01 tables (`mst_company_tax_details`, `mst_trust`) and
+`mst_company_tax_details_insert` are copied from `tables_VER_01_1.txt` and the
+procedure file in the v1.01 bundle.
+
+`mst_trust_insert` comes from the v1.01 bundle. `mst_trust_validate` is the text
+Uncle installed on live on 9 Nov: the bundle version with `pms.mst_fin_year` →
+`pms.finyr_master` and a `::VARCHAR` cast on its message (without the cast
+Postgres 11 raises 42804 *structure of query does not match function result type*
+on every call).
+
+`mst_finyr_set_current` at the end of the file is the text Uncle installed on live
+on 9 Nov (we wrote it at his request).
+
+`002_form5_objects.sql` is Form 5 (places, branches, regions, institutions) verbatim from
+`TABLE_PROCEDURE_FUNCTION_1_1.xlsx`, installed on live on 9 Nov; `mst_branch_validate` is
+on live but not in the sheet, so its text comes from the live catalog.
+`003_local_fixes.sql` holds our **marked local fixes** to it, so institutions can be
+created locally and in the e2e test: `sp_mst_inst_insert` reads `trust_desc` (not the
+missing `trust_name`), and `inst_code` is 7 characters (not 9) in the table check, the
+procedure and the validate function. Live still has both bugs (open items); drop each
+fix once Uncle installs it.
 
 ## 6. Setup wizard
 
@@ -196,10 +237,11 @@ that don't match the dates, and 18-month ranges.
 | Rule | Source |
 |---|---|
 | `finyr` is `YYYY-YYYY` with consecutive years | walkthrough ("9 characters, start year – end year") |
-| Only the current or the previous financial year (by today in `DEFAULT_TIMEZONE`) | walkthrough (02-11-2026 → 2026-2027 or 2025-2026) |
+| The previous year, the current one, or up to `FY_FUTURE_YEARS` (default 0, 0–5) after it, by today in `DEFAULT_TIMEZONE` | Uncle, 9 Nov: a year only once today falls in it (the v1.01 walkthrough had allowed 2027-2028 in 2026-2027) |
 | Dates are 1 April → 31 March; sent dates must match | walkthrough ("1st April to 31st March of next year") |
-| Which year is current: while none is, the new one; else an explicit `finyr_is_current`; else today's year | decided inside the locked transaction, so creating the previous year first cannot leave it current (no procedure changes it later) |
+| Which year is current: while none is, the new one; else an explicit `finyr_is_current`; else today's year | decided inside the locked transaction, so creating the previous year first cannot leave it current (no procedure changes it later). A future year is current only when asked |
 | Not a duplicate, no overlap | DBA function (re-run in a locked transaction) |
+| Change the current year later | `PUT /financial-years/current`: under the same advisory lock as create, check the year exists, then `CALL pms.mst_finyr_set_current`; already current is a no-op |
 
 ## 7. Company rules
 
@@ -214,7 +256,7 @@ Applied in this order; **all** field problems are returned together.
    |---|---|
    | `name` | required, ≤ 300 |
    | `shortname` | required, ≤ 50 |
-   | `fin_st_dt` | `YYYY-MM-DD`, must be **1 April**; defaults to the current financial year's start |
+   | `fin_st_dt` | `YYYY-MM-DD`, must be **1 April**, and if sent the `finyr_st_date` of an existing financial year; defaults to the current financial year's start |
    | `pin` | optional, 6 digits, not starting with 0 |
    | `mobile` | optional, 10 digits starting 6–9 (after normalising) |
    | `email` | optional, ≤ 200, same pattern as the DBA's check |
@@ -233,7 +275,76 @@ with sl=1, any alteration would update to same record"). The backend owns `sl`
 (never accepted from the client; unknown body fields are rejected) and
 `time_zone` (stamped on first save in `DEFAULT_TIMEZONE`, kept afterwards).
 
-## 8. Errors
+## 8. Company tax and contact details (Form 3)
+
+One record, `sl = 1`, saved through `pms.mst_company_tax_details_insert`.
+The company must exist first (`409 Save the company details first`). No field
+is mandatory; anything entered must be valid, and every problem is returned in
+one 422.
+
+| Field | Rule |
+|---|---|
+| `pan` | trim, upper-case; `IsPAN` |
+| `pan_enabled`, `pan_enabled_dt` | The number stays optional when enabled (Uncle: "optional, but if they key PAN or GSTIN we should validate it"). The date is only allowed when enabled, cannot be after today, and defaults to today |
+| `gstin` | trim, upper-case; `IsGSTIN` (format + check digit); first 2 digits a code from `GSTStates`; if `pan` is filled, characters 3–12 must equal it |
+| `gstin_enabled`, `gstin_enabled_dt` | as for PAN, against `gstin` |
+| `gstin_state` | ≤ 100, official spelling from `GSTStates`. With a GSTIN: empty → filled from its code; filled → must match its code |
+| `comm_mail_id` | trim, lower-case, ≤ 150, `IsEmail` |
+| `comm_mail_pwd` | write-only, ≤ 150, not trimmed. Missing or `null` keeps the stored one; `""` clears it; text replaces it. Never returned or logged; responses carry `comm_mail_pwd_set` |
+| `comm_mobile`, `comm_whatsapp` | `NormalizeIndianMobile`, then `IsIndianMobile` |
+
+**Save** — one transaction holding `pg_advisory_xact_lock(hashtext('pms.mst_company_tax_details'))`:
+check `company_master` has `sl = 1`, read the stored password (`FOR UPDATE`) so a
+missing one is kept (the procedure replaces every column), then
+`CALL pms.mst_company_tax_details_insert(1, …)`. `201` when the row was created, `200` after.
+
+## 9. Trusts (Form 4)
+
+`trust_code` is the key: trim, upper-case, exactly 3 letters; it never changes.
+There is no delete yet (see open items). Rules, all field problems returned together:
+
+| Field | Rule |
+|---|---|
+| `trust_code` | required, `^[A-Z]{3}$`; not already used (409) |
+| `trust_desc` | required, ≤ 100; unique ignoring case among other trusts (409). Uncle's validate compares case-insensitively while the table's UNIQUE is case-sensitive: we follow the stricter rule |
+| `wrk_st_finyr` | required, must exist in `finyr_master` |
+| `wrk_st_date` | required, `YYYY-MM-DD`, inside `wrk_st_finyr` (1 April → 31 March; pending Uncle) |
+
+**Order:** our checks → duplicate code / description (409) → `mst_trust_validate`
+(each sentence mapped to a field; a duplicate description is a 409) → one
+transaction holding `pg_advisory_xact_lock(hashtext('pms.mst_trust'))`: for create
+the code must be free, for update it must exist; the description must be free;
+re-run the validate; `CALL pms.mst_trust_insert`. `mst_trust_insert` is an upsert,
+so without the lock and the "code is free" check a create could silently
+overwrite an existing trust.
+
+## 10. Places, branches, regions and institutions (Form 5)
+
+**Code lists.** `codelist.Kind` names a list's table, columns and DBA routines (all
+constants), and one repository, use case and controller serve all three. Code: trim,
+upper-case, `^[A-Z]{3}$`; name: spaces tidied, ≤ 250, unique ignoring case. Order: our
+checks → duplicates (409) → the DBA's validate function → one transaction holding
+`pg_advisory_xact_lock(hashtext('pms.mst_place'))` (per table): re-check, re-validate,
+`CALL` his insert. His inserts RAISE on duplicates (P0001), mapped the same way. No edit
+or delete: he has given no procedure for them.
+
+**Institutions.**
+
+| Rule | Why |
+|---|---|
+| `inst_code` = trust code + `-` + 3 digits, prefix must be `trust_code` | All 571 rows of `EXAMPLE INST.xlsx` (`ACU-009`) |
+| `inst_reg_code` = region code + `-` + 2 digits, prefix must be an existing region | The sheet's reg prefixes (BGN, CBP, MYS) are 23 area codes, not places; `mst_inst` has no region column (open item) |
+| `inst_full_code` = `inst_code:inst_reg_code`, built by the server | Always 14 characters, "ACM Code (14 Char.)" on the old screen |
+| Trust, place, branch, region, `from_fin_yr` must exist; all problems in one 422 | Same style as every other form |
+| Mobiles 10 digits after dropping `+91`/0; emails lower-case; `reg_date` defaults to today, never future | Same as the company form |
+| `*_sl_idx` sent as NULL | Uncle's sheet: "auto calculation to be made later" |
+| Next codes = highest number with that prefix + 1 | The old system numbers per trust and per region |
+
+Write order: our checks and lookups → ACM/reg/full code free (409) →
+`fn_mst_inst_validate` → one transaction holding `pg_advisory_xact_lock(hashtext('pms.mst_inst'))`:
+re-check the codes, re-validate, `CALL pms.sp_mst_inst_insert`.
+
+## 11. Errors
 
 Use cases return `domain.AppError`; `delivery/rest/utils.WriteError` is the
 only place that maps them to HTTP.
@@ -246,19 +357,34 @@ only place that maps them to HTTP.
 | `not_found` | 404 | Unknown record or route |
 | `method_not_allowed` | 405 | Route exists but not for this HTTP method |
 | `rate_limited` | 429 | Too many login attempts from one IP |
-| `conflict` | 409 | Duplicate financial year / overlap / tenant code / email / db_key; company before financial year |
+| `conflict` | 409 | Duplicate financial year / overlap / tenant code / email / db_key; company before financial year; tax details before company; trust code or description taken |
 | `validation_failed` | 422 | Field rules failed (with `fields[]`) |
 | `internal_error` | 500 | Anything unexpected; logged with cause, caller sees a generic message |
 | `service_unavailable` | 503 | A database could not be reached, or Postgres is shutting down or starting up |
 | `timeout` | 504 | The request ran past `REQUEST_TIMEOUT` (e.g. a stuck database) |
 
-## 9. Open items for the DBA
+## 12. Open items for the DBA
 
 1. Agree to the `pms.sys_*` tables (or provide a separate `platform` schema).
 2. `company_master.time_zone` is `TIMESTAMPTZ`, so the zone name is lost;
    `VARCHAR` holding `Asia/Kolkata` would keep it.
 3. A `rec_updated_at` column on `company_master`.
-4. No procedure to change which financial year is current (or edit one) after creation.
+4. Done 9 Nov: `pms.mst_finyr_set_current(take_finyr)` is installed on live. There is still no way to edit or delete a year.
 5. `finyr_master_validate` does not check the `YYYY-YYYY` format, the 1 April–31 March
    dates or the 9-character limit — we enforce them in the API.
 6. Confirm the 1 April rule for `fin_st_dt` and which company fields are mandatory.
+7. Done 9 Nov: Uncle installed the fixed `mst_trust_validate` (`finyr_master` + `::VARCHAR`) and `mst_trust_insert` on live. Worth one read-only check: `SELECT pg_get_functiondef('pms.mst_trust_validate'::regproc);`
+8. Done 9 Nov: no future financial years (Uncle: "only if current date falls"). `FY_FUTURE_YEARS` defaults to 0 and can be raised without a code change.
+9. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; it is stored as plain text, so encrypt it in the app before mail sending is built.
+10. PAN/GSTIN numbers are optional even when enabled, validated when keyed (Uncle, 9 Nov). Still open: is the enabled date the registration date, and may it be in the future? (built: not after today).
+11. Must a trust's `wrk_st_date` fall inside its `wrk_st_finyr`? (built: inside).
+12. Trust delete and edits (Uncle, 9 Nov): a trust may be deleted only while it has no transactions, and cannot be altered once transactions exist. There are no transaction tables yet, so neither is enforced; a delete needs a DBA procedure that checks for transactions (we have no `DELETE` right on `mst_trust`).
+13. Form 5, `sp_mst_inst_insert` reads `trust_name` from `mst_trust`; the column is `trust_desc`, so every institution insert fails on live (`column "trust_name" does not exist`). Fixed locally in `003_local_fixes.sql`.
+14. Form 5, `inst_code` is 9 characters in the table check, procedure and validate function, but the client's codes are 7 (`ACU-009`) and 7 + `:` + 6 = 14 is the full code. With 9, no full code can be 14, so nothing can be saved. We built 7; fixed locally.
+15. Form 5, `inst_reg_code` is UNIQUE, but the client's sheet reuses reg codes across trusts (`CBP-01` under ACU, OTU, SAM and SAT). Built: unique everywhere, as the table says.
+16. Form 5, the reg code prefix looks like the region code, but `mst_inst` has no `regn_code`. Built: the prefix must be an existing region.
+17. Form 5, no update or delete procedures for place, branch, region or institution, so nothing can be edited (the old screen has Edit/Save).
+18. Form 5, codes letters only? Uncle's checks only count 3 characters (`"1 a"` passes). Built: `^[A-Z]{3}$`, like trusts.
+19. Form 5, the old screen has an accountant designation but `mst_inst` has no `inst_acnt_desig`; the table has a liaison officer the screen does not. Built: the table's fields.
+20. Form 5, what is `reg_date`? Built: defaults to today, never in the future. Which fields are mandatory? Built: trust, codes, name, place, branch, start year.
+21. Form 5, `mst_branch` and `mst_inst` have no `last_update_at` trigger (place and region do).

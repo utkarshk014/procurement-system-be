@@ -13,10 +13,14 @@ import (
 	"github.com/go-chi/cors"
 	controllers_admin "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/admin"
 	controllers_auth "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/auth"
+	controllers_codelist "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/codelist"
 	controllers_company "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/company"
 	controllers_finyear "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/finyear"
+	controllers_institution "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/institution"
 	controllers_meta "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/meta"
 	controllers_setup "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/setup"
+	controllers_taxdetails "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/taxdetails"
+	controllers_trust "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/trust"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/middlewares"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/routers"
 	rest_utils "github.com/utkarshk014/procurement-system-be/src/delivery/rest/utils"
@@ -56,7 +60,13 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 	routers.SetAdminRoutes(r, auth, controllers_admin.NewAdminController(usecases, logger), logger)
 	routers.SetSetupRoutes(r, auth, controllers_setup.NewSetupController(usecases, logger), logger)
 	routers.SetFinYearRoutes(r, auth, controllers_finyear.NewFinYearController(usecases, logger), logger)
-	routers.SetCompanyRoutes(r, auth, controllers_company.NewCompanyController(usecases, logger), logger)
+	routers.SetCompanyRoutes(r, auth, controllers_company.NewCompanyController(usecases, logger),
+		controllers_taxdetails.NewTaxDetailsController(usecases, logger), logger)
+	routers.SetTrustRoutes(r, auth, controllers_trust.NewTrustController(usecases, logger), logger)
+	routers.SetCodeListRoute(r, "places", auth, controllers_codelist.NewCodeListController(usecases.Places, logger), logger)
+	routers.SetCodeListRoute(r, "branches", auth, controllers_codelist.NewCodeListController(usecases.Branches, logger), logger)
+	routers.SetCodeListRoute(r, "regions", auth, controllers_codelist.NewCodeListController(usecases.Regions, logger), logger)
+	routers.SetInstitutionRoutes(r, auth, controllers_institution.NewInstitutionController(usecases, logger), logger)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		rest_utils.WriteError(w, r, logger, domain.NotFound("Route not found"))

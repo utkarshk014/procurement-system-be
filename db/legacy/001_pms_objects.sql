@@ -369,3 +369,254 @@ END;
 $$;
 
 
+-- ---- tables_VER_01_1.txt (v1.01): mst_company_tax_details
+CREATE TABLE pms.mst_company_tax_details
+(
+    sl                  INTEGER PRIMARY KEY,
+    pan_enabled         BOOLEAN DEFAULT FALSE,
+    pan_enabled_dt      DATE,
+    pan                 VARCHAR(10),
+    gstin_enabled       BOOLEAN DEFAULT FALSE,
+    gstin_enabled_dt    DATE,
+    gstin               VARCHAR(15),
+    gstin_state         VARCHAR(100),
+    comm_mail_id        VARCHAR(150),
+    comm_mail_pwd       VARCHAR(150),
+    comm_mobile         VARCHAR(10),
+    comm_whatsapp       VARCHAR(10),
+    rec_created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT cons1_mst_company_tax_details_company
+        FOREIGN KEY (sl)
+        REFERENCES pms.company_master(sl)
+        ON UPDATE CASCADE
+        ON DELETE CASCADE
+);
+
+-- ---- tables_VER_01_1.txt (v1.01): mst_trust
+CREATE TABLE pms.mst_trust
+(
+    trust_code      VARCHAR(3) PRIMARY KEY,
+    trust_desc      VARCHAR(100) NOT NULL UNIQUE,
+    wrk_st_finyr    VARCHAR,
+    wrk_st_date     DATE,
+    rec_created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_update_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_trust_code
+        CHECK (trust_code ~ '^[A-Z]{3}$')
+);
+
+-- ---- PROC_pms.mst_company_tax_details_inser.txt
+CREATE OR REPLACE PROCEDURE pms.mst_company_tax_details_insert
+(
+    take_sl                  INTEGER,
+    take_pan_enabled         BOOLEAN,
+    take_pan_enabled_dt      DATE,
+    take_pan                 VARCHAR(10),
+    take_gstin_enabled       BOOLEAN,
+    take_gstin_enabled_dt    DATE,
+    take_gstin               VARCHAR(15),
+    take_gstin_state         VARCHAR(100),
+    take_comm_mail_id        VARCHAR(150),
+    take_comm_mail_pwd       VARCHAR(150),
+    take_comm_mobile         VARCHAR(10),
+    take_comm_whatsapp       VARCHAR(10)
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    INSERT INTO pms.mst_company_tax_details
+    (
+        sl,
+        pan_enabled,
+        pan_enabled_dt,
+        pan,
+        gstin_enabled,
+        gstin_enabled_dt,
+        gstin,
+        gstin_state,
+        comm_mail_id,
+        comm_mail_pwd,
+        comm_mobile,
+        comm_whatsapp,
+        rec_created_at
+    )
+    VALUES
+    (
+        take_sl,
+        take_pan_enabled,
+        take_pan_enabled_dt,
+        take_pan,
+        take_gstin_enabled,
+        take_gstin_enabled_dt,
+        take_gstin,
+        take_gstin_state,
+        take_comm_mail_id,
+        take_comm_mail_pwd,
+        take_comm_mobile,
+        take_comm_whatsapp,
+        CURRENT_TIMESTAMP
+    )
+
+    ON CONFLICT (sl)
+    DO UPDATE SET
+        pan_enabled      = EXCLUDED.pan_enabled,
+        pan_enabled_dt   = EXCLUDED.pan_enabled_dt,
+        pan              = EXCLUDED.pan,
+        gstin_enabled    = EXCLUDED.gstin_enabled,
+        gstin_enabled_dt = EXCLUDED.gstin_enabled_dt,
+        gstin            = EXCLUDED.gstin,
+        gstin_state      = EXCLUDED.gstin_state,
+        comm_mail_id     = EXCLUDED.comm_mail_id,
+        comm_mail_pwd    = EXCLUDED.comm_mail_pwd,
+        comm_mobile      = EXCLUDED.comm_mobile,
+        comm_whatsapp    = EXCLUDED.comm_whatsapp;
+END;
+$$;
+
+-- ---- FUNC_pms.mst_trust_validate.txt (as installed on live by Uncle, 9 Nov 2026: finyr_master + ::VARCHAR)
+CREATE OR REPLACE FUNCTION pms.mst_trust_validate
+(
+    take_trust_code     VARCHAR(3),
+    take_trust_desc     VARCHAR(100),
+    take_wrk_st_finyr   VARCHAR,
+    take_wrk_st_date    DATE
+)
+RETURNS TABLE
+(
+    is_valid       BOOLEAN,
+    take_error_msg VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_error_msg TEXT := '';
+BEGIN
+
+    -- Validate Trust Code
+    IF take_trust_code IS NULL
+       OR take_trust_code !~ '^[A-Z]{3}$' THEN
+        v_error_msg := v_error_msg ||
+            'Trust code must contain exactly 3 uppercase alphabetic characters. ';
+    END IF;
+
+    -- Validate Trust Description
+    IF take_trust_desc IS NULL
+       OR TRIM(take_trust_desc) = '' THEN
+        v_error_msg := v_error_msg ||
+            'Trust description cannot be empty. ';
+    ELSE
+        IF EXISTS
+        (
+            SELECT 1
+            FROM pms.mst_trust
+            WHERE LOWER(TRIM(trust_desc)) =
+                  LOWER(TRIM(take_trust_desc))
+              AND trust_code IS DISTINCT FROM take_trust_code
+        ) THEN
+            v_error_msg := v_error_msg ||
+                'Trust description already exists. ';
+        END IF;
+    END IF;
+
+    -- Validate Financial Year
+    IF take_wrk_st_finyr IS NULL
+       OR TRIM(take_wrk_st_finyr) = '' THEN
+        v_error_msg := v_error_msg ||
+            'Working financial year is required. ';
+    ELSIF NOT EXISTS
+    (
+        SELECT 1
+        FROM pms.finyr_master
+        WHERE finyr = take_wrk_st_finyr
+    ) THEN
+        v_error_msg := v_error_msg ||
+            'Invalid financial year. Please select from mst_fin_year. ';
+    END IF;
+
+    -- Validate Working Start Date
+    IF take_wrk_st_date IS NULL THEN
+        v_error_msg := v_error_msg ||
+            'Working start date is required. ';
+    END IF;
+
+    -- Return Validation Result
+    RETURN QUERY
+    SELECT
+        (v_error_msg = ''),
+        (CASE
+            WHEN v_error_msg = '' THEN 'Validation successful'
+            ELSE TRIM(v_error_msg)
+        END)::VARCHAR;
+
+END;
+$$;
+
+-- ---- PROC_pms.mst_trust_insert.txt (installed on live 9 Nov 2026, same text)
+CREATE OR REPLACE PROCEDURE pms.mst_trust_insert
+(
+    take_trust_code     VARCHAR(3),
+    take_trust_desc     VARCHAR(100),
+    take_wrk_st_finyr   VARCHAR,
+    take_wrk_st_date    DATE
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+    INSERT INTO pms.mst_trust
+    (
+        trust_code,
+        trust_desc,
+        wrk_st_finyr,
+        wrk_st_date,
+        rec_created_at,
+        last_update_at
+    )
+    VALUES
+    (
+        take_trust_code,
+        take_trust_desc,
+        take_wrk_st_finyr,
+        take_wrk_st_date,
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+    )
+    ON CONFLICT (trust_code)
+    DO UPDATE SET
+        trust_desc     = EXCLUDED.trust_desc,
+        wrk_st_finyr   = EXCLUDED.wrk_st_finyr,
+        wrk_st_date    = EXCLUDED.wrk_st_date,
+        last_update_at = CURRENT_TIMESTAMP;
+
+END;
+$$;
+
+-- ---- PROC_pms.mst_finyr_set_current
+-- Written by us at Uncle's request ("go ahead", 9 Nov 2026) and installed on live by him
+-- on 9 Nov 2026 as sent (PROC_pms.mst_finyr_set_current.txt).
+CREATE OR REPLACE PROCEDURE pms.mst_finyr_set_current
+(
+    take_finyr   VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF take_finyr IS NULL OR TRIM(take_finyr) = '' THEN
+        RAISE EXCEPTION 'Financial year is required';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pms.finyr_master
+        WHERE finyr = take_finyr
+    ) THEN
+        RAISE EXCEPTION 'Financial year % does not exist', take_finyr;
+    END IF;
+
+    -- Exactly one current year: the chosen one on, every other one off.
+    UPDATE pms.finyr_master
+    SET finyr_is_current = (finyr = take_finyr)
+    WHERE finyr_is_current IS DISTINCT FROM (finyr = take_finyr);
+
+END;
+$$;

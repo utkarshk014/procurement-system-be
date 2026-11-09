@@ -103,6 +103,44 @@ func checkWithFunction(ctx context.Context, q pgutil.Querier, fy *domain_finyear
 	return msg, nil
 }
 
+func (r *postgresFinYearRepository) SetCurrent(ctx context.Context, finYr string) (bool, error) {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return false, err
+	}
+	changed := false
+	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		// The same lock as create, so a create deciding "is any year current?" cannot interleave.
+		if _, err := tx.Exec(ctx, lockSQL); err != nil {
+			return domain.Internal("Could not lock financial years", err)
+		}
+		var isCurrent bool
+		err := tx.QueryRow(ctx,
+			`SELECT COALESCE(finyr_is_current, FALSE) FROM pms.finyr_master WHERE finyr = $1`, finYr).Scan(&isCurrent)
+		switch {
+		case pgutil.IsNoRows(err):
+			return domain.Validation(domain.FieldError{Field: "finyr", Message: "must be an existing financial year"})
+		case err != nil:
+			return domain.Internal("Could not load financial year", err)
+		case isCurrent:
+			return nil // already current: no change
+		}
+		if _, err := tx.Exec(ctx, `CALL pms.mst_finyr_set_current($1::varchar)`, finYr); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+				return domain_finyear.FunctionError(pgErr.Message)
+			}
+			return domain.Internal("Could not change the current financial year", err)
+		}
+		changed = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return changed, nil
+}
+
 func (r *postgresFinYearRepository) Create(ctx context.Context, fy *domain_finyear.FinancialYear, decideCurrent domain_finyear.CurrentRule) error {
 	pool, err := pgutil.TenantPool(ctx, r.pools)
 	if err != nil {

@@ -47,7 +47,7 @@ func TestEndToEnd(t *testing.T) {
 		tcpostgres.WithDatabase("esispms"),
 		tcpostgres.WithUsername("pms"),
 		tcpostgres.WithPassword("pms"),
-		tcpostgres.WithInitScripts(filepath.Join("..", "..", "..", "db", "legacy", "001_pms_objects.sql")),
+		tcpostgres.WithInitScripts(legacyScripts()...),
 		tcpostgres.BasicWaitStrategies(),
 	)
 	testcontainers.CleanupContainer(t, pg)
@@ -71,6 +71,7 @@ func TestEndToEnd(t *testing.T) {
 		CORSAllowedOrigins: []string{"http://localhost:3000"},
 		RequestTimeout:     15 * time.Second,
 		LoginRateLimit:     1000,
+		FYFutureYears:      1,
 	}
 
 	_, err = database.NewManager(ctx, dsn, map[string]string{"esis": dsn, "alias": dsn + "&application_name=x"})
@@ -191,6 +192,8 @@ func TestEndToEnd(t *testing.T) {
 	curStart := domain_finyear.StartYearFor(time.Now().In(ist))
 	curFY := domain_finyear.FinYrLabel(curStart)
 	prevFY := domain_finyear.FinYrLabel(curStart - 1)
+	nextFY := domain_finyear.FinYrLabel(curStart + 1)
+	prevStartDate := fmt.Sprintf("%d-04-01", curStart-1)
 	curStartDate := fmt.Sprintf("%d-04-01", curStart)
 
 	company := map[string]any{
@@ -216,20 +219,25 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, "Create the financial year first", res.errMessage())
 	})
 
-	t.Run("financial year options are current and previous", func(t *testing.T) {
+	t.Run("financial year options are previous, current, then future, oldest first", func(t *testing.T) {
 		res := api.do("GET", "/api/v1/financial-years/options", esis, nil)
 		require.Equal(t, 200, res.status)
 		opts := res.list()
-		require.Len(t, opts, 2)
-		first := opts[0].(map[string]any)
-		assert.Equal(t, curFY, first["finyr"])
-		assert.Equal(t, curStartDate, first["finyr_st_date"])
-		assert.Equal(t, "current", first["kind"])
-		assert.Equal(t, prevFY, opts[1].(map[string]any)["finyr"])
+		require.Len(t, opts, 3)
+		prev, cur, next := opts[0].(map[string]any), opts[1].(map[string]any), opts[2].(map[string]any)
+		assert.Equal(t, prevFY, prev["finyr"])
+		assert.Equal(t, "previous", prev["kind"])
+		assert.Equal(t, curFY, cur["finyr"])
+		assert.Equal(t, curStartDate, cur["finyr_st_date"])
+		assert.Equal(t, "current", cur["kind"])
+		assert.Equal(t, nextFY, next["finyr"])
+		assert.Equal(t, "future", next["kind"])
+		assert.Equal(t, false, next["exists"])
 	})
 
 	t.Run("financial year rules", func(t *testing.T) {
-		for in, field := range map[string]string{"abc": "finyr", "2026-2028": "finyr", "1999-2000": "finyr"} {
+		tooFar := domain_finyear.FinYrLabel(curStart + 2)
+		for in, field := range map[string]string{"abc": "finyr", "2026-2028": "finyr", "1999-2000": "finyr", tooFar: "finyr"} {
 			res := api.do("POST", "/api/v1/financial-years/validate", esis, map[string]any{"finyr": in})
 			assert.Equal(t, 422, res.status, in)
 			assert.Contains(t, res.fieldErrors(), field, in)
@@ -276,6 +284,56 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, curFY, st.data()["current_financial_year"])
 	})
 
+	t.Run("a future year can be created and does not become current", func(t *testing.T) {
+		res := api.do("POST", "/api/v1/financial-years/", esis, map[string]any{"finyr": nextFY})
+		require.Equal(t, 201, res.status, res.body)
+		assert.Equal(t, nextFY, res.data()["finyr"])
+		assert.Equal(t, false, res.data()["finyr_is_current"])
+		assert.Equal(t, fmt.Sprintf("%d-04-01", curStart+1), res.data()["finyr_st_date"])
+
+		assert.Equal(t, curFY, api.do("GET", "/api/v1/financial-years/current", esis, nil).data()["finyr"])
+		assert.Len(t, api.do("GET", "/api/v1/financial-years/", esis, nil).list(), 3)
+		opts := api.do("GET", "/api/v1/financial-years/options", esis, nil).list()
+		assert.Equal(t, true, opts[2].(map[string]any)["exists"])
+	})
+
+	t.Run("make another year current through the DBA procedure", func(t *testing.T) {
+		res := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": prevFY})
+		require.Equal(t, 200, res.status, res.body)
+		assert.Equal(t, prevFY, res.data()["finyr"])
+		assert.Equal(t, true, res.data()["finyr_is_current"])
+
+		var current string
+		require.NoError(t, dbm.Control().QueryRow(ctx,
+			`SELECT string_agg(finyr, ',') FROM pms.finyr_master WHERE finyr_is_current`).Scan(&current))
+		assert.Equal(t, prevFY, current, "exactly one current year")
+		assert.Equal(t, prevFY, api.do("GET", "/api/v1/setup/status", esis, nil).data()["current_financial_year"])
+
+		same := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": prevFY})
+		assert.Equal(t, 200, same.status, "already current: 200, no change")
+
+		missing := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": "1999-2000"})
+		assert.Equal(t, 422, missing.status)
+		assert.Equal(t, "must be an existing financial year", missing.fieldErrors()["finyr"])
+		bad := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": "abc"})
+		assert.Equal(t, 422, bad.status)
+		assert.Contains(t, bad.fieldErrors(), "finyr")
+		extra := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": curFY, "finyr_is_current": true})
+		assert.Equal(t, 422, extra.status, "only finyr is accepted")
+
+		back := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": curFY})
+		require.Equal(t, 200, back.status, back.body)
+		list := api.do("GET", "/api/v1/financial-years/", esis, nil).list()
+		n := 0
+		for _, y := range list {
+			if y.(map[string]any)["finyr_is_current"] == true {
+				n++
+			}
+		}
+		assert.Equal(t, 1, n, "the list shows exactly one current year")
+		assert.Equal(t, curFY, api.do("GET", "/api/v1/financial-years/current", esis, nil).data()["finyr"])
+	})
+
 	t.Run("company validate reports every problem at once", func(t *testing.T) {
 		bad := map[string]any{"name": "", "pin": "5600", "mobile": "123", "email": "x@", "fin_st_dt": "2026-08-15"}
 		res := api.do("POST", "/api/v1/company/validate", esis, bad)
@@ -299,6 +357,45 @@ func TestEndToEnd(t *testing.T) {
 		unknown := api.do("POST", "/api/v1/company/validate", esis, map[string]any{"name": "X", "sl": 5})
 		assert.Equal(t, 422, unknown.status)
 		assert.Equal(t, "is not an accepted field", unknown.fieldErrors()["sl"])
+	})
+
+	t.Run("company fin_st_dt must be the start of an existing financial year", func(t *testing.T) {
+		missing := clone(company)
+		missing["fin_st_dt"] = fmt.Sprintf("%d-04-01", curStart-3)
+		res := api.do("POST", "/api/v1/company/validate", esis, missing)
+		require.Equal(t, 422, res.status, res.body)
+		assert.Equal(t, "must be the start of an existing financial year", res.fieldErrors()["fin_st_dt"])
+
+		other := clone(company)
+		other["fin_st_dt"] = prevStartDate
+		ok := api.do("POST", "/api/v1/company/validate", esis, other)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Equal(t, prevStartDate, ok.data()["company"].(map[string]any)["fin_st_dt"])
+	})
+
+	taxDetails := map[string]any{
+		"pan_enabled": true, "pan_enabled_dt": curStartDate, "pan": "abcde1234f",
+		"gstin_enabled": true, "gstin_enabled_dt": curStartDate, "gstin": "29ABCDE1234F1ZW", "gstin_state": "",
+		"comm_mail_id": "Accounts@ESIS.in", "comm_mail_pwd": "mail-secret-1",
+		"comm_mobile": "+91 98765-43210", "comm_whatsapp": "9876543210",
+	}
+
+	t.Run("GST states are listed by code", func(t *testing.T) {
+		res := api.do("GET", "/api/v1/meta/gst-states", esis, nil)
+		require.Equal(t, 200, res.status)
+		states := res.list()
+		require.Len(t, states, 37)
+		assert.Equal(t, map[string]any{"code": "01", "name": "Jammu and Kashmir"}, states[0])
+		assert.Contains(t, states, map[string]any{"code": "29", "name": "Karnataka"})
+		assert.Equal(t, 401, api.do("GET", "/api/v1/meta/gst-states", "", nil).status)
+	})
+
+	t.Run("tax details need the company first", func(t *testing.T) {
+		assert.Equal(t, 404, api.do("GET", "/api/v1/company/tax-details", esis, nil).status)
+		res := api.do("PUT", "/api/v1/company/tax-details", esis, taxDetails)
+		assert.Equal(t, 409, res.status, res.body)
+		assert.Equal(t, "Save the company details first", res.errMessage())
+		assert.Equal(t, 409, api.do("POST", "/api/v1/company/tax-details/validate", esis, taxDetails).status)
 	})
 
 	var created map[string]any
@@ -337,6 +434,100 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, 1, rows, "only ever one company row")
 	})
 
+	t.Run("tax details: save, keep or clear the mail password, never return it", func(t *testing.T) {
+		storedPassword := func() *string {
+			var pwd *string
+			require.NoError(t, dbm.Control().QueryRow(ctx,
+				`SELECT comm_mail_pwd FROM pms.mst_company_tax_details WHERE sl = 1`).Scan(&pwd))
+			return pwd
+		}
+
+		res := api.do("PUT", "/api/v1/company/tax-details", esis, taxDetails)
+		require.Equal(t, 201, res.status, res.body)
+		d := res.data()
+		assert.Equal(t, float64(1), d["sl"])
+		assert.Equal(t, "ABCDE1234F", d["pan"])
+		assert.Equal(t, "Karnataka", d["gstin_state"], "filled from the GSTIN's state code")
+		assert.Equal(t, "accounts@esis.in", d["comm_mail_id"])
+		assert.Equal(t, "9876543210", d["comm_mobile"])
+		assert.Equal(t, curStartDate, d["pan_enabled_dt"])
+		assert.Equal(t, true, d["comm_mail_pwd_set"])
+		assert.NotContains(t, res.body, "mail-secret-1")
+		assert.NotContains(t, d, "comm_mail_pwd")
+		require.NotNil(t, storedPassword())
+		assert.Equal(t, "mail-secret-1", *storedPassword())
+
+		get := api.do("GET", "/api/v1/company/tax-details", esis, nil)
+		require.Equal(t, 200, get.status)
+		assert.NotContains(t, get.body, "mail-secret-1")
+		assert.Equal(t, true, get.data()["comm_mail_pwd_set"])
+
+		keep := clone(taxDetails)
+		delete(keep, "comm_mail_pwd")
+		keep["comm_whatsapp"] = "9123456780"
+		res = api.do("PUT", "/api/v1/company/tax-details", esis, keep)
+		require.Equal(t, 200, res.status, res.body)
+		assert.Equal(t, true, res.data()["comm_mail_pwd_set"], "no password sent keeps the stored one")
+		assert.Equal(t, "9123456780", res.data()["comm_whatsapp"])
+		assert.Equal(t, "mail-secret-1", *storedPassword())
+
+		keep["comm_mail_pwd"] = nil
+		require.Equal(t, 200, api.do("PUT", "/api/v1/company/tax-details", esis, keep).status)
+		assert.Equal(t, "mail-secret-1", *storedPassword(), "null keeps it too")
+
+		cleared := clone(keep)
+		cleared["comm_mail_pwd"] = ""
+		res = api.do("PUT", "/api/v1/company/tax-details", esis, cleared)
+		require.Equal(t, 200, res.status, res.body)
+		assert.Equal(t, false, res.data()["comm_mail_pwd_set"])
+		assert.Nil(t, storedPassword())
+
+		empty := api.do("PUT", "/api/v1/company/tax-details", esis, map[string]any{})
+		require.Equal(t, 200, empty.status, "nothing is mandatory")
+		assert.Equal(t, "", empty.data()["pan"])
+		assert.Nil(t, empty.data()["pan_enabled_dt"])
+
+		var rows int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_company_tax_details`).Scan(&rows))
+		assert.Equal(t, 1, rows)
+	})
+
+	t.Run("tax details report every problem in one 422", func(t *testing.T) {
+		bad := map[string]any{
+			"pan": "ABC12", "gstin": "29ABCDE1234F1ZX", "gstin_state": "Atlantis",
+			"comm_mail_id": "x@", "comm_mobile": "12345", "comm_whatsapp": "5876543210",
+		}
+		res := api.do("PUT", "/api/v1/company/tax-details", esis, bad)
+		require.Equal(t, 422, res.status, res.body)
+		f := res.fieldErrors()
+		assert.Equal(t, "must be a PAN like ABCDE1234F", f["pan"])
+		assert.Equal(t, "is not a valid GSTIN", f["gstin"])
+		for _, field := range []string{"gstin_state", "comm_mail_id", "comm_mobile", "comm_whatsapp"} {
+			assert.Contains(t, f, field)
+		}
+
+		mismatch := clone(taxDetails)
+		mismatch["pan"] = "ABCDE1234G"
+		mismatch["gstin_state"] = "Kerala"
+		res = api.do("POST", "/api/v1/company/tax-details/validate", esis, mismatch)
+		require.Equal(t, 422, res.status, res.body)
+		assert.Equal(t, "PAN inside GSTIN must match the PAN", res.fieldErrors()["gstin"])
+		assert.Equal(t, "does not match GSTIN state code 29 (Karnataka)", res.fieldErrors()["gstin_state"])
+
+		ok := api.do("POST", "/api/v1/company/tax-details/validate", esis, taxDetails)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Equal(t, true, ok.data()["valid"])
+		assert.Equal(t, "Karnataka", ok.data()["tax_details"].(map[string]any)["gstin_state"])
+
+		for _, serverOwned := range []string{"sl", "comm_mail_pwd_set", "rec_created_at"} {
+			body := clone(taxDetails)
+			body[serverOwned] = 1
+			res := api.do("PUT", "/api/v1/company/tax-details", esis, body)
+			assert.Equal(t, 422, res.status, serverOwned)
+			assert.Equal(t, "is not an accepted field", res.fieldErrors()[serverOwned], serverOwned)
+		}
+	})
+
 	t.Run("concurrent saves still leave one row", func(t *testing.T) {
 		var wg sync.WaitGroup
 		for i := 0; i < 5; i++ {
@@ -358,6 +549,307 @@ func TestEndToEnd(t *testing.T) {
 		st := api.do("GET", "/api/v1/setup/status", esis, nil)
 		assert.Equal(t, "done", st.data()["next_step"])
 		assert.Equal(t, true, st.data()["company_done"])
+	})
+
+	t.Run("trusts: list, create, duplicates, rules, update", func(t *testing.T) {
+		empty := api.do("GET", "/api/v1/trusts/", esis, nil)
+		require.Equal(t, 200, empty.status, empty.body)
+		assert.NotNil(t, empty.list(), "an empty list, not 404")
+		assert.Len(t, empty.list(), 0)
+		assert.Equal(t, 403, api.do("GET", "/api/v1/trusts/", root, nil).status, "platform admin cannot use tenant routes")
+
+		sat := map[string]any{"trust_code": "sat", "trust_desc": "Sri Adichunchanagiri Trust", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate}
+		ok := api.do("POST", "/api/v1/trusts/validate", esis, sat)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Equal(t, true, ok.data()["valid"])
+		assert.Equal(t, "SAT", ok.data()["trust"].(map[string]any)["trust_code"])
+		assert.Len(t, api.do("GET", "/api/v1/trusts/", esis, nil).list(), 0, "validate writes nothing")
+
+		res := api.do("POST", "/api/v1/trusts/", esis, sat)
+		require.Equal(t, 201, res.status, res.body)
+		assert.Equal(t, "SAT", res.data()["trust_code"], "sat is stored as SAT")
+		assert.Equal(t, curFY, res.data()["wrk_st_finyr"])
+		assert.Equal(t, curStartDate, res.data()["wrk_st_date"])
+		assert.NotEmpty(t, res.data()["rec_created_at"])
+		firstUpdate := res.data()["last_update_at"]
+		require.NotEmpty(t, firstUpdate)
+
+		var code string
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT trust_code FROM pms.mst_trust`).Scan(&code))
+		assert.Equal(t, "SAT", code)
+
+		again := api.do("POST", "/api/v1/trusts/", esis, sat)
+		assert.Equal(t, 409, again.status)
+		assert.Equal(t, "is already taken", again.fieldErrors()["trust_code"])
+
+		sameDesc := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "ACU", "trust_desc": "SRI ADICHUNCHANAGIRI TRUST", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		assert.Equal(t, 409, sameDesc.status, sameDesc.body)
+		assert.Equal(t, "is already used by trust SAT", sameDesc.fieldErrors()["trust_desc"])
+
+		unknownFY := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "ACU", "trust_desc": "Adichunchanagiri University", "wrk_st_finyr": "1999-2000", "wrk_st_date": "1999-04-01",
+		})
+		assert.Equal(t, 422, unknownFY.status)
+		assert.Equal(t, "must be an existing financial year", unknownFY.fieldErrors()["wrk_st_finyr"])
+
+		outside := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "ACU", "trust_desc": "Adichunchanagiri University", "wrk_st_finyr": curFY, "wrk_st_date": fmt.Sprintf("%d-04-01", curStart+1),
+		})
+		assert.Equal(t, 422, outside.status)
+		assert.Contains(t, outside.fieldErrors()["wrk_st_date"], "must fall inside "+curFY)
+
+		badCode := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "AC1", "trust_desc": "", "wrk_st_finyr": "", "wrk_st_date": "",
+		})
+		assert.Equal(t, 422, badCode.status)
+		f := badCode.fieldErrors()
+		for _, field := range []string{"trust_code", "trust_desc", "wrk_st_finyr", "wrk_st_date"} {
+			assert.Contains(t, f, field)
+		}
+
+		acu := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "ACU", "trust_desc": "Adichunchanagiri University", "wrk_st_finyr": prevFY, "wrk_st_date": prevStartDate,
+		})
+		require.Equal(t, 201, acu.status, acu.body)
+
+		list := api.do("GET", "/api/v1/trusts/", esis, nil).list()
+		require.Len(t, list, 2)
+		assert.Equal(t, "ACU", list[0].(map[string]any)["trust_code"], "sorted by code")
+		assert.Equal(t, "SAT", list[1].(map[string]any)["trust_code"])
+
+		one := api.do("GET", "/api/v1/trusts/sat", esis, nil)
+		require.Equal(t, 200, one.status)
+		assert.Equal(t, "Sri Adichunchanagiri Trust", one.data()["trust_desc"])
+		assert.Equal(t, 404, api.do("GET", "/api/v1/trusts/XYZ", esis, nil).status)
+
+		upd := api.do("PUT", "/api/v1/trusts/sat", esis, map[string]any{
+			"trust_desc": "Sri Adichunchanagiri Shikshana Trust", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		require.Equal(t, 200, upd.status, upd.body)
+		assert.Equal(t, "Sri Adichunchanagiri Shikshana Trust", upd.data()["trust_desc"])
+		assert.NotEqual(t, firstUpdate, upd.data()["last_update_at"], "last_update_at moves")
+		assert.Equal(t, res.data()["rec_created_at"], upd.data()["rec_created_at"])
+
+		taken := api.do("PUT", "/api/v1/trusts/SAT", esis, map[string]any{
+			"trust_desc": "adichunchanagiri university", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		assert.Equal(t, 409, taken.status)
+		assert.Equal(t, "is already used by trust ACU", taken.fieldErrors()["trust_desc"])
+
+		missing := api.do("PUT", "/api/v1/trusts/XYZ", esis, map[string]any{
+			"trust_desc": "Nobody", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		assert.Equal(t, 404, missing.status)
+
+		withCode := api.do("PUT", "/api/v1/trusts/SAT", esis, map[string]any{
+			"trust_code": "SAX", "trust_desc": "Renamed", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		assert.Equal(t, 422, withCode.status, "a code never changes")
+		assert.Equal(t, "is not an accepted field", withCode.fieldErrors()["trust_code"])
+
+		var rows int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_trust`).Scan(&rows))
+		assert.Equal(t, 2, rows)
+	})
+
+	t.Run("racing creates of one trust code: one wins, none overwrite", func(t *testing.T) {
+		statuses := concurrently(6, func(i int) int {
+			return api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+				"trust_code": "KHE", "trust_desc": fmt.Sprintf("KHE Trust %d", i), "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+			}).status
+		})
+		assert.Equal(t, []int{201, 409, 409, 409, 409, 409}, statuses)
+		var n int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_trust WHERE trust_code = 'KHE'`).Scan(&n))
+		assert.Equal(t, 1, n)
+	})
+
+	t.Run("places, branches and regions: list, create, duplicates, rules", func(t *testing.T) {
+		for _, l := range []struct{ path, label string }{{"places", "Place"}, {"branches", "Branch"}, {"regions", "Region"}} {
+			base := "/api/v1/" + l.path + "/"
+			empty := api.do("GET", base, esis, nil)
+			require.Equal(t, 200, empty.status, empty.body)
+			assert.NotNil(t, empty.list(), "an empty list, not 404")
+			assert.Equal(t, 403, api.do("GET", base, root, nil).status, "platform admin cannot use tenant routes")
+
+			mys := map[string]any{"code": " mys ", "name": "  Mysore   " + l.label + " "}
+			ok := api.do("POST", base+"validate", esis, mys)
+			require.Equal(t, 200, ok.status, ok.body)
+			assert.Equal(t, "MYS", ok.data()["entry"].(map[string]any)["code"])
+			assert.Len(t, api.do("GET", base, esis, nil).list(), 0, "validate writes nothing")
+
+			res := api.do("POST", base, esis, mys)
+			require.Equal(t, 201, res.status, res.body)
+			assert.Equal(t, "MYS", res.data()["code"], "mys is stored as MYS")
+			assert.Equal(t, "Mysore "+l.label, res.data()["name"], "spaces are tidied")
+			assert.NotEmpty(t, res.data()["rec_created_at"])
+
+			again := api.do("POST", base, esis, mys)
+			assert.Equal(t, 409, again.status)
+			assert.Equal(t, "is already taken", again.fieldErrors()["code"])
+
+			sameName := api.do("POST", base, esis, map[string]any{"code": "MYZ", "name": "MYSORE " + strings.ToUpper(l.label)})
+			assert.Equal(t, 409, sameName.status, sameName.body)
+			assert.Equal(t, "is already used by MYS", sameName.fieldErrors()["name"])
+
+			bad := api.do("POST", base, esis, map[string]any{"code": "1 a", "name": ""})
+			assert.Equal(t, 422, bad.status)
+			assert.Equal(t, "must be exactly 3 letters, e.g. MYS", bad.fieldErrors()["code"], "Uncle's check only counts 3 characters")
+			assert.Equal(t, "is required", bad.fieldErrors()["name"])
+
+			require.Equal(t, 201, api.do("POST", base, esis, map[string]any{"code": "BGN", "name": "B G Nagara " + l.label}).status)
+			list := api.do("GET", base, esis, nil).list()
+			require.Len(t, list, 2)
+			assert.Equal(t, "BGN", list[0].(map[string]any)["code"], "sorted by name")
+
+			one := api.do("GET", base+"mys", esis, nil)
+			require.Equal(t, 200, one.status)
+			assert.Equal(t, "Mysore "+l.label, one.data()["name"])
+			assert.Equal(t, 404, api.do("GET", base+"XYZ", esis, nil).status)
+			assert.Equal(t, 405, api.do("PUT", base+"MYS", esis, map[string]any{"name": "x"}).status, "no edit procedure yet")
+
+			statuses := concurrently(4, func(i int) int {
+				return api.do("POST", base, esis, map[string]any{"code": "RAC", "name": fmt.Sprintf("Race %s %d", l.label, i)}).status
+			})
+			assert.Equal(t, []int{201, 409, 409, 409}, statuses, l.path)
+
+			// Different codes, names that differ only in case: the table's UNIQUE is case-sensitive,
+			// so only the per-table lock stops two of these from being saved together.
+			for round := 0; round < 5; round++ {
+				statuses = concurrently(8, func(i int) int {
+					name := fmt.Sprintf("Case race %s %d", l.label, round)
+					if i%2 == 1 {
+						name = strings.ToUpper(name)
+					}
+					code := string(rune('A'+round)) + string(rune('A'+i)) + "Z"
+					return api.do("POST", base, esis, map[string]any{"code": code, "name": name}).status
+				})
+				assert.Equal(t, []int{201, 409, 409, 409, 409, 409, 409, 409}, statuses, "%s round %d", l.path, round)
+			}
+		}
+
+		// A row written outside the app with two spaces still blocks the same name with one.
+		_, err := dbm.Control().Exec(ctx, `INSERT INTO pms.mst_place (place_code, place_name) VALUES ('OLD', 'Old  Town')`)
+		require.NoError(t, err)
+		spaced := api.do("POST", "/api/v1/places/", esis, map[string]any{"code": "OLT", "name": "old town"})
+		assert.Equal(t, 409, spaced.status, spaced.body)
+		assert.Equal(t, "is already used by OLD", spaced.fieldErrors()["name"])
+	})
+
+	t.Run("institutions: next code, create, duplicates, rules, list", func(t *testing.T) {
+		next := api.do("GET", "/api/v1/institutions/next-code?trust_code=sat&regn_code=mys", esis, nil)
+		require.Equal(t, 200, next.status, next.body)
+		assert.Equal(t, "SAT-001", next.data()["inst_code"])
+		assert.Equal(t, "MYS-01", next.data()["inst_reg_code"])
+
+		body := map[string]any{
+			"trust_code": "SAT", "inst_code": "sat-001", "inst_reg_code": "mys-01",
+			"inst_name": " BGS  Public School ", "inst_add": "Kuvempunagar", "inst_place": "Mysore (Kuvempunagar)",
+			"place_code": "MYS", "branch_code": "MYS", "from_fin_yr": curFY,
+			"inst_email": "Office@BGS.test", "inst_tel": "0821 2541234",
+			"inst_head_name": "Dr. Head", "inst_head_desig": "Principal", "inst_head_mobile": "+91 98450 12345", "inst_head_email": "head@bgs.test",
+			"inst_acnt_name": "Accounts", "inst_acnt_mobile": "09845012346",
+			"inst_liason_name": "Liaison", "inst_liason_desig": "Officer",
+		}
+		ok := api.do("POST", "/api/v1/institutions/validate", esis, body)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Equal(t, "SAT-001:MYS-01", ok.data()["institution"].(map[string]any)["inst_full_code"])
+		assert.Equal(t, float64(0), api.do("GET", "/api/v1/institutions/", esis, nil).data()["total"], "validate writes nothing")
+
+		res := api.do("POST", "/api/v1/institutions/", esis, body)
+		require.Equal(t, 201, res.status, res.body)
+		d := res.data()
+		assert.Equal(t, "SAT-001", d["inst_code"])
+		assert.Equal(t, "SAT-001:MYS-01", d["inst_full_code"], "14 characters, built by the server")
+		assert.Equal(t, "BGS Public School", d["inst_name"])
+		assert.Equal(t, "Sri Adichunchanagiri Shikshana Trust", d["trust_name"], "copied from the trust by the DBA's procedure")
+		assert.Equal(t, "Mysore Place", d["place_name"])
+		assert.Equal(t, "Mysore Branch", d["branch_name"])
+		assert.Equal(t, "9845012345", d["inst_head_mobile"], "mobiles are stored as 10 digits")
+		assert.Equal(t, "9845012346", d["inst_acnt_mobile"])
+		assert.Equal(t, "office@bgs.test", d["inst_email"])
+		assert.NotEmpty(t, d["reg_date"], "today when not sent")
+		assert.Equal(t, curFY, d["from_fin_yr"])
+
+		next = api.do("GET", "/api/v1/institutions/next-code?trust_code=SAT&regn_code=MYS", esis, nil)
+		assert.Equal(t, "SAT-002", next.data()["inst_code"])
+		assert.Equal(t, "MYS-02", next.data()["inst_reg_code"])
+
+		again := api.do("POST", "/api/v1/institutions/", esis, body)
+		assert.Equal(t, 409, again.status)
+		assert.Equal(t, "is already used by SAT-001", again.fieldErrors()["inst_code"])
+
+		sameReg := clone(body)
+		sameReg["inst_code"] = "SAT-002"
+		taken := api.do("POST", "/api/v1/institutions/", esis, sameReg)
+		assert.Equal(t, 409, taken.status)
+		assert.Equal(t, "is already used by SAT-001", taken.fieldErrors()["inst_reg_code"])
+
+		bad := api.do("POST", "/api/v1/institutions/", esis, map[string]any{
+			"trust_code": "SAT", "inst_code": "ACU-005", "inst_reg_code": "ZZZ-01", "inst_name": "",
+			"place_code": "XYZ", "branch_code": "XYZ", "from_fin_yr": "1999-2000", "reg_date": "2999-01-01",
+			"inst_head_mobile": "12345", "inst_email": "not-an-email",
+		})
+		assert.Equal(t, 422, bad.status, bad.body)
+		f := bad.fieldErrors()
+		assert.Equal(t, "must start with the trust code SAT-", f["inst_code"])
+		assert.Equal(t, "must start with an existing region code (ZZZ is not one)", f["inst_reg_code"])
+		assert.Equal(t, "is required", f["inst_name"])
+		assert.Equal(t, "must be an existing place", f["place_code"])
+		assert.Equal(t, "must be an existing branch", f["branch_code"])
+		assert.Equal(t, "must be an existing financial year", f["from_fin_yr"])
+		assert.Equal(t, "cannot be in the future", f["reg_date"])
+		assert.Contains(t, f, "inst_head_mobile")
+		assert.Contains(t, f, "inst_email")
+
+		nine := clone(body)
+		nine["inst_code"], nine["inst_reg_code"] = "SAT-00009", "MYS-09"
+		assert.Equal(t, "must be the trust code, a dash and 3 digits, e.g. SAT-001",
+			api.do("POST", "/api/v1/institutions/", esis, nine).fieldErrors()["inst_code"])
+
+		unknownTrust := clone(body)
+		unknownTrust["trust_code"], unknownTrust["inst_code"], unknownTrust["inst_reg_code"] = "ZZZ", "ZZZ-001", "MYS-05"
+		assert.Equal(t, "must be an existing trust", api.do("POST", "/api/v1/institutions/", esis, unknownTrust).fieldErrors()["trust_code"])
+
+		serverOwned := clone(body)
+		serverOwned["inst_full_code"] = "SAT-009:MYS-09"
+		assert.Equal(t, "is not an accepted field", api.do("POST", "/api/v1/institutions/", esis, serverOwned).fieldErrors()["inst_full_code"])
+
+		second := clone(body)
+		second["trust_code"], second["inst_code"], second["inst_reg_code"] = "ACU", "ACU-001", "BGN-01"
+		second["inst_name"], second["place_code"], second["branch_code"] = "AIMS", "BGN", "BGN"
+		second["from_fin_yr"] = prevFY
+		require.Equal(t, 201, api.do("POST", "/api/v1/institutions/", esis, second).status)
+
+		all := api.do("GET", "/api/v1/institutions/", esis, nil).data()
+		assert.Equal(t, float64(2), all["total"])
+		items := all["items"].([]any)
+		assert.Equal(t, "ACU-001:BGN-01", items[0].(map[string]any)["inst_full_code"], "sorted by full code")
+		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?trust_code=sat", esis, nil).data()["total"])
+		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?q=public", esis, nil).data()["total"])
+		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?q=acu-001", esis, nil).data()["total"])
+		// % and _ are searched as themselves, not as LIKE wildcards that would match every row.
+		assert.Equal(t, float64(0), api.do("GET", "/api/v1/institutions/?q=%25", esis, nil).data()["total"])
+		assert.Equal(t, float64(0), api.do("GET", "/api/v1/institutions/?q=_", esis, nil).data()["total"])
+		paged := api.do("GET", "/api/v1/institutions/?page=2&page_size=1", esis, nil).data()
+		assert.Len(t, paged["items"], 1)
+		assert.Equal(t, "SAT-001:MYS-01", paged["items"].([]any)[0].(map[string]any)["inst_full_code"])
+		assert.Equal(t, 400, api.do("GET", "/api/v1/institutions/?page=0", esis, nil).status)
+
+		one := api.do("GET", "/api/v1/institutions/sat-001", esis, nil)
+		require.Equal(t, 200, one.status)
+		assert.Equal(t, "Dr. Head", one.data()["inst_head_name"])
+		assert.Equal(t, 404, api.do("GET", "/api/v1/institutions/SAT-999", esis, nil).status)
+		assert.Equal(t, 403, api.do("GET", "/api/v1/institutions/", root, nil).status)
+
+		statuses := concurrently(4, func(i int) int {
+			b := clone(body)
+			b["inst_code"], b["inst_reg_code"] = "SAT-050", fmt.Sprintf("MYS-%02d", 50+i)
+			return api.do("POST", "/api/v1/institutions/", esis, b).status
+		})
+		assert.Equal(t, []int{201, 409, 409, 409}, statuses)
 	})
 
 	t.Run("second tenant on its own database is isolated, and its first saves are race-free", func(t *testing.T) {
@@ -617,11 +1109,23 @@ func createTenantDatabase(t *testing.T, ctx context.Context, dsn, name string) s
 	conn, err := pgx.Connect(ctx, other)
 	require.NoError(t, err)
 	defer conn.Close(ctx)
-	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "db", "legacy", "001_pms_objects.sql"))
-	require.NoError(t, err)
-	_, err = conn.Exec(ctx, string(sql))
-	require.NoError(t, err)
+	for _, path := range legacyScripts() {
+		sql, err := os.ReadFile(path)
+		require.NoError(t, err)
+		_, err = conn.Exec(ctx, string(sql))
+		require.NoError(t, err, path)
+	}
 	return other
+}
+
+// legacyScripts are the DBA's objects plus our marked local fixes, in the order Postgres runs them.
+func legacyScripts() []string {
+	dir := filepath.Join("..", "..", "..", "db", "legacy")
+	return []string{
+		filepath.Join(dir, "001_pms_objects.sql"),
+		filepath.Join(dir, "002_form5_objects.sql"),
+		filepath.Join(dir, "003_local_fixes.sql"),
+	}
 }
 
 // concurrently runs fn n times at once and returns the results sorted.

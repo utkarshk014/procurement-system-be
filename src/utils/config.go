@@ -27,6 +27,10 @@ type Config struct {
 	// DefaultTimeZone decides "today" for financial years and stamps company_master.time_zone.
 	DefaultTimeZone string `env:"DEFAULT_TIMEZONE" envDefault:"Asia/Kolkata"`
 
+	// FYFutureYears is how many financial years after the current one may be created (0-5).
+	// 0 by default: Uncle (9 Nov) allows a year only once today falls in it.
+	FYFutureYears int `env:"FY_FUTURE_YEARS" envDefault:"0"`
+
 	// Access and refresh tokens use different secrets so one can never stand in for the other.
 	JWTAccessSecret  string        `env:"JWT_ACCESS_SECRET,required"`
 	JWTRefreshSecret string        `env:"JWT_REFRESH_SECRET,required"`
@@ -84,6 +88,8 @@ func (c *Config) checkRanges() error {
 		return fmt.Errorf("REFRESH_TOKEN_TTL must be longer than ACCESS_TOKEN_TTL")
 	case c.LoginRateLimit <= 0:
 		return fmt.Errorf("LOGIN_RATE_LIMIT_PER_MINUTE must be positive")
+	case c.FYFutureYears < 0 || c.FYFutureYears > 5:
+		return fmt.Errorf("FY_FUTURE_YEARS must be between 0 and 5")
 	}
 	for i, cidr := range c.TrustedProxies {
 		c.TrustedProxies[i] = strings.TrimSpace(cidr) // "a, b" lists keep the space otherwise

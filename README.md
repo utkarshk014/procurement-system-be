@@ -3,7 +3,9 @@
 Multi-tenant procurement management API in Go. Phase 1 covers **platform
 admin**, **tenant onboarding**, **JWT authentication** and the **setup wizard**
 — step 1 financial year, step 2 the single company record (`sl = 1`) — on top
-of the DBA's PostgreSQL schema `pms`.
+of the DBA's PostgreSQL schema `pms`. Phase 2 adds making another year current,
+the company's tax and contact details (Form 3), trusts (Form 4), and Form 5:
+places, branches, regions and institutions.
 
 | | |
 |---|---|
