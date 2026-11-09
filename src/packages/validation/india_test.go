@@ -15,6 +15,8 @@ func TestNormalizeIndianMobile(t *testing.T) {
 		"(98765) 43210":    "9876543210",
 		"12345":            "12345",
 		"+1 (555) 0100123": "15550100123",
+		" abc ":            "abc",
+		"--":               "--",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, NormalizeIndianMobile(in), in)

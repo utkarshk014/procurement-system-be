@@ -16,6 +16,7 @@ type FinYearController interface {
 	Current(w http.ResponseWriter, r *http.Request) error
 	Validate(w http.ResponseWriter, r *http.Request) error
 	Create(w http.ResponseWriter, r *http.Request) error
+	SetCurrent(w http.ResponseWriter, r *http.Request) error
 }
 
 type finYearController struct {
@@ -34,7 +35,7 @@ type validateResponse struct {
 	FinancialYear *domain_finyear.FinancialYear `json:"financial_year"`
 }
 
-// Options lists the years the setup form may offer (current and previous).
+// Options lists the years that may be created: previous, current, then future years, oldest first.
 func (fc *finYearController) Options(w http.ResponseWriter, r *http.Request) error {
 	opts, err := fc.usecases.FinancialYear.Options(r.Context())
 	if err != nil {
@@ -86,5 +87,19 @@ func (fc *finYearController) Create(w http.ResponseWriter, r *http.Request) erro
 		return err
 	}
 	rest_utils.Respond(w, http.StatusCreated, fy)
+	return nil
+}
+
+// SetCurrent makes another existing year the current one (200); all others are un-marked.
+func (fc *finYearController) SetCurrent(w http.ResponseWriter, r *http.Request) error {
+	var in domain_finyear.SetCurrentInput
+	if err := rest_utils.DecodeJSON(w, r, &in); err != nil {
+		return err
+	}
+	fy, err := fc.usecases.FinancialYear.SetCurrent(r.Context(), in)
+	if err != nil {
+		return err
+	}
+	rest_utils.Respond(w, http.StatusOK, fy)
 	return nil
 }

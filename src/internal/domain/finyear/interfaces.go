@@ -4,13 +4,15 @@ import "context"
 
 // Usecase is financial-year setup for the caller's tenant (wizard step 1).
 type Usecase interface {
-	// Options lists the years that may be created today: current and previous.
+	// Options lists the years that may be created today: previous, current, then future years, oldest first.
 	Options(ctx context.Context) ([]Option, error)
 	// Validate is a dry run of Create.
 	Validate(ctx context.Context, in FinancialYearInput) (*FinancialYear, error)
 	Create(ctx context.Context, in FinancialYearInput) (*FinancialYear, error)
 	List(ctx context.Context) ([]FinancialYear, error)
 	Current(ctx context.Context) (*FinancialYear, error)
+	// SetCurrent makes an existing year the only current one; already current is a no-op.
+	SetCurrent(ctx context.Context, in SetCurrentInput) (*FinancialYear, error)
 }
 
 // Repository talks to pms.finyr_master and its DBA function and procedure.
@@ -24,6 +26,9 @@ type Repository interface {
 	CheckWithFunction(ctx context.Context, fy *FinancialYear) (string, error)
 	// Create sets fy.IsCurrent via decideCurrent, re-checks and inserts, all under one lock.
 	Create(ctx context.Context, fy *FinancialYear, decideCurrent CurrentRule) error
+	// SetCurrent checks the year exists and calls the DBA's set-current procedure, under the create lock.
+	// changed is false when the year was already current.
+	SetCurrent(ctx context.Context, finYr string) (changed bool, err error)
 }
 
 // CurrentRule decides whether a new year is current, given whether any year already is.

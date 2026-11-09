@@ -20,6 +20,7 @@ type Pinger interface {
 type MetaController interface {
 	Health(w http.ResponseWriter, r *http.Request) error
 	IndianStates(w http.ResponseWriter, r *http.Request) error
+	GSTStates(w http.ResponseWriter, r *http.Request) error
 }
 
 type metaController struct {
@@ -46,5 +47,11 @@ func (mc *metaController) Health(w http.ResponseWriter, r *http.Request) error {
 // IndianStates lists states and union territories for the state dropdown.
 func (mc *metaController) IndianStates(w http.ResponseWriter, r *http.Request) error {
 	rest_utils.Respond(w, http.StatusOK, validation.IndianStates)
+	return nil
+}
+
+// GSTStates lists GST state codes and names, sorted by code, for the GST state dropdown.
+func (mc *metaController) GSTStates(w http.ResponseWriter, r *http.Request) error {
+	rest_utils.Respond(w, http.StatusOK, validation.GSTStates)
 	return nil
 }

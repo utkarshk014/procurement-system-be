@@ -55,16 +55,39 @@ func (f *fakeRepo) Create(ctx context.Context, fy *domain_finyear.FinancialYear,
 	return nil
 }
 
+func (f *fakeRepo) SetCurrent(_ context.Context, finYr string) (bool, error) {
+	idx := -1
+	for i := range f.years {
+		if f.years[i].FinYr == finYr {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return false, domain.Validation(domain.FieldError{Field: "finyr", Message: "must be an existing financial year"})
+	}
+	if f.years[idx].IsCurrent {
+		return false, nil
+	}
+	for i := range f.years {
+		f.years[i].IsCurrent = i == idx
+	}
+	return true, nil
+}
+
 func ctx() context.Context {
 	return domain.WithPrincipal(context.Background(), &domain.Principal{
 		UserID: 7, Role: domain.RoleTenantAdmin, TenantID: 1, DBKey: "esis",
 	})
 }
 
-// newAt builds the use case with "today" fixed, in IST.
+// newAt builds the use case with "today" fixed, in IST, and the default of one future year.
 func newAt(repo *fakeRepo, y int, m time.Month, d int) *finYearUsecase {
+	return newWithFuture(repo, 1, y, m, d)
+}
+
+func newWithFuture(repo *fakeRepo, futureYears, y int, m time.Month, d int) *finYearUsecase {
 	ist := time.FixedZone("IST", 5*3600+1800)
-	uc := NewFinYearUsecase(repo, ist, slog.New(slog.NewTextHandler(io.Discard, nil))).(*finYearUsecase)
+	uc := NewFinYearUsecase(repo, ist, futureYears, slog.New(slog.NewTextHandler(io.Discard, nil))).(*finYearUsecase)
 	uc.now = func() time.Time { return time.Date(y, m, d, 12, 0, 0, 0, ist) }
 	return uc
 }
@@ -95,31 +118,71 @@ func TestStartYearFor(t *testing.T) {
 	assert.Equal(t, 2025, domain_finyear.StartYearFor(time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC)))
 }
 
-// The walkthrough's example: configured on 02.11.2026, the choices are
-// 2026-2027 and 2025-2026.
-func TestOptionsMatchWalkthrough(t *testing.T) {
+// Uncle's v1.01 example: on 02.11.2026 the choices are 2025-2026, 2026-2027 and the future 2027-2028.
+func TestOptionsArePreviousCurrentThenFutureOldestFirst(t *testing.T) {
 	uc := newAt(&fakeRepo{}, 2026, time.November, 2)
 	opts, err := uc.Options(ctx())
 	require.NoError(t, err)
-	require.Len(t, opts, 2)
-	assert.Equal(t, domain_finyear.Option{FinYr: "2026-2027", StartDate: "2026-04-01", EndDate: "2027-03-31", Kind: "current"}, opts[0])
-	assert.Equal(t, domain_finyear.Option{FinYr: "2025-2026", StartDate: "2025-04-01", EndDate: "2026-03-31", Kind: "previous"}, opts[1])
+	require.Len(t, opts, 3)
+	assert.Equal(t, domain_finyear.Option{FinYr: "2025-2026", StartDate: "2025-04-01", EndDate: "2026-03-31", Kind: "previous"}, opts[0])
+	assert.Equal(t, domain_finyear.Option{FinYr: "2026-2027", StartDate: "2026-04-01", EndDate: "2027-03-31", Kind: "current"}, opts[1])
+	assert.Equal(t, domain_finyear.Option{FinYr: "2027-2028", StartDate: "2027-04-01", EndDate: "2028-03-31", Kind: "future"}, opts[2])
+}
+
+func TestOptionsFollowFutureYearsSetting(t *testing.T) {
+	opts, err := newWithFuture(&fakeRepo{}, 0, 2026, time.November, 2).Options(ctx())
+	require.NoError(t, err)
+	require.Len(t, opts, 2, "0 future years: previous and current only")
+	assert.Equal(t, "current", opts[1].Kind)
+
+	opts, err = newWithFuture(&fakeRepo{}, 3, 2026, time.November, 2).Options(ctx())
+	require.NoError(t, err)
+	require.Len(t, opts, 5)
+	assert.Equal(t, "2029-2030", opts[4].FinYr)
+	assert.Equal(t, "future", opts[4].Kind)
 }
 
 func TestOptionsInFebruaryUseThePreviousCalendarYear(t *testing.T) {
 	uc := newAt(&fakeRepo{}, 2027, time.February, 10)
 	opts, err := uc.Options(ctx())
 	require.NoError(t, err)
-	assert.Equal(t, "2026-2027", opts[0].FinYr)
-	assert.Equal(t, "2025-2026", opts[1].FinYr)
+	assert.Equal(t, "2025-2026", opts[0].FinYr)
+	assert.Equal(t, "2026-2027", opts[1].FinYr)
+	assert.Equal(t, "current", opts[1].Kind)
+	assert.Equal(t, "2027-2028", opts[2].FinYr)
 }
 
 func TestOptionsFlagExistingYears(t *testing.T) {
 	repo := &fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2026-2027", IsCurrent: true}}}
 	opts, err := newAt(repo, 2026, time.November, 2).Options(ctx())
 	require.NoError(t, err)
-	assert.True(t, opts[0].Exists)
-	assert.False(t, opts[1].Exists)
+	assert.False(t, opts[0].Exists)
+	assert.True(t, opts[1].Exists)
+	assert.False(t, opts[2].Exists)
+}
+
+func TestFutureYearCanBeCreatedButIsNotCurrentByDefault(t *testing.T) {
+	repo := &fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2026-2027", IsCurrent: true}}}
+	fy, err := newAt(repo, 2026, time.November, 2).Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2027-2028"})
+	require.NoError(t, err)
+	assert.Equal(t, "2027-04-01", fy.StartDate)
+	assert.Equal(t, "2028-03-31", fy.EndDate)
+	assert.False(t, fy.IsCurrent, "a future year is current only when asked")
+	cur, err := repo.Current(ctx())
+	require.NoError(t, err)
+	assert.Equal(t, "2026-2027", cur.FinYr)
+
+	yes := true
+	fy, err = newAt(&fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2026-2027", IsCurrent: true}}}, 2026, time.November, 2).
+		Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2027-2028", IsCurrent: &yes})
+	require.NoError(t, err)
+	assert.True(t, fy.IsCurrent, "an explicit choice wins")
+}
+
+func TestFutureYearIsCurrentWhenNoYearIsYet(t *testing.T) {
+	fy, err := newAt(&fakeRepo{}, 2026, time.November, 2).Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2027-2028"})
+	require.NoError(t, err)
+	assert.True(t, fy.IsCurrent, "the first year is always current")
 }
 
 func TestCreateFillsStandardDatesAndMakesFirstYearCurrent(t *testing.T) {
@@ -180,8 +243,8 @@ func TestRejectsBadOrDisallowedYears(t *testing.T) {
 		"abc":        "must look like 2026-2027 (two consecutive years)",
 		"2026-2028":  "must look like 2026-2027 (two consecutive years)",
 		"2026-20270": "must look like 2026-2027 (two consecutive years)",
-		"2027-2028":  "must be the current (2026-2027) or previous (2025-2026) financial year",
-		"2024-2025":  "must be the current (2026-2027) or previous (2025-2026) financial year",
+		"2028-2029":  "must be between 2025-2026 and 2027-2028",
+		"2024-2025":  "must be between 2025-2026 and 2027-2028",
 	}
 	for in, want := range cases {
 		_, err := uc.Create(ctx(), domain_finyear.FinancialYearInput{FinYr: in})
@@ -190,6 +253,9 @@ func TestRejectsBadOrDisallowedYears(t *testing.T) {
 	}
 	_, err := uc.Create(ctx(), domain_finyear.FinancialYearInput{})
 	assert.Equal(t, "is required", fields(err)["finyr"])
+
+	_, err = newWithFuture(&fakeRepo{}, 0, 2026, time.November, 2).Create(ctx(), domain_finyear.FinancialYearInput{FinYr: "2027-2028"})
+	assert.Equal(t, "must be between 2025-2026 and 2026-2027", fields(err)["finyr"], "0 future years")
 }
 
 func TestRejectsNonStandardDates(t *testing.T) {
@@ -221,4 +287,40 @@ func TestFunctionMessagesBecomeFieldErrors(t *testing.T) {
 	err = domain_finyear.FunctionError("Financial year end date cannot be before start date")
 	assert.True(t, domain.IsKind(err, domain.KindValidation))
 	assert.Contains(t, fields(err), "finyr_end_date")
+}
+
+func TestSetCurrentSwitchesTheOnlyCurrentYear(t *testing.T) {
+	repo := &fakeRepo{years: []domain_finyear.FinancialYear{
+		{FinYr: "2026-2027", IsCurrent: true}, {FinYr: "2027-2028"},
+	}}
+	uc := newAt(repo, 2026, time.November, 2)
+	fy, err := uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{FinYr: " 2027-2028 "})
+	require.NoError(t, err)
+	assert.Equal(t, "2027-2028", fy.FinYr)
+	assert.True(t, fy.IsCurrent)
+	cur, err := repo.Current(ctx())
+	require.NoError(t, err)
+	assert.Equal(t, "2027-2028", cur.FinYr)
+	assert.False(t, repo.years[0].IsCurrent, "the old one is un-marked")
+
+	again, err := uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{FinYr: "2027-2028"})
+	require.NoError(t, err, "already current is a no-op, not an error")
+	assert.True(t, again.IsCurrent)
+}
+
+func TestSetCurrentRejectsBadOrUnknownYears(t *testing.T) {
+	uc := newAt(&fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2026-2027", IsCurrent: true}}}, 2026, time.November, 2)
+	_, err := uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{})
+	assert.Equal(t, "is required", fields(err)["finyr"])
+	_, err = uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{FinYr: "2026-2028"})
+	assert.Equal(t, "must look like 2026-2027 (two consecutive years)", fields(err)["finyr"])
+	_, err = uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{FinYr: "2030-2031"})
+	assert.True(t, domain.IsKind(err, domain.KindValidation))
+	assert.Equal(t, "must be an existing financial year", fields(err)["finyr"])
+}
+
+func TestSetCurrentProcedureMessagesMapToFinyr(t *testing.T) {
+	err := domain_finyear.FunctionError("Financial year 2030-2031 does not exist")
+	assert.True(t, domain.IsKind(err, domain.KindValidation))
+	assert.Equal(t, "Financial year 2030-2031 does not exist", fields(err)["finyr"])
 }
