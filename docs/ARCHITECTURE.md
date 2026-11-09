@@ -181,7 +181,7 @@ There is no public sign-up. The first platform admin is created with the CLI.
 | `pms.mst_company_tax_details` | DBA (v1.01) | Company tax and contact details (Form 3), one row `sl = 1`, FK to `company_master` | Read with `SELECT` (never the password column's value, only whether it is set); written only through the procedure |
 | `pms.mst_company_tax_details_insert(...)` | DBA (v1.01) | Upsert by `sl`, 12 arguments, replaces every column | Called for every save with `sl = 1`. No validate function exists: every rule is ours |
 | `pms.mst_trust` | DBA (v1.01) | Trusts (Form 4); PK `trust_code` (`^[A-Z]{3}$`), `trust_desc` UNIQUE (case-sensitive) | Read with `SELECT`; written only through the procedure |
-| `pms.mst_trust_validate(...)` | DBA (v1.01) | Returns one row `(is_valid, take_error_msg)`; problems joined by `. ` | Called on validate, and again inside the create/update transaction. **Broken on live** (see open items) |
+| `pms.mst_trust_validate(...)` | DBA (v1.01) | Returns one row `(is_valid, take_error_msg)`; problems joined by `. ` | Called on validate, and again inside the create/update transaction. Fixed on live by Uncle on 9 Nov (`finyr_master` + `::VARCHAR`) |
 | `pms.mst_trust_insert(...)` | DBA (v1.01) | Upsert by `trust_code`, sets `last_update_at` | Called for create and update. Installed on live 9 Nov 2026 |
 | `pms.sw_config`, `pms.config_sw_insert(...)` | DBA | App settings | Not used yet |
 | `pms.sys_tenant` / `sys_user` / `sys_refresh_token` | Us (migration 00001) | Platform | Tenants, logins, refresh tokens |
@@ -196,11 +196,11 @@ The v1.01 tables (`mst_company_tax_details`, `mst_trust`) and
 `mst_company_tax_details_insert` are copied from `tables_VER_01_1.txt` and the
 procedure file in the v1.01 bundle.
 
-`mst_trust_validate` and `mst_trust_insert` also come from the v1.01 bundle. `mst_trust_validate` carries **two marked local fixes** so the
-tests can run: `pms.mst_fin_year` → `pms.finyr_master`, and a `::VARCHAR` cast on its
-message (without it Postgres 11 raises 42804 *structure of query does not match
-function result type* on every call). Replace it with Uncle's corrected text before
-the trust PR leaves draft.
+`mst_trust_insert` comes from the v1.01 bundle. `mst_trust_validate` is the text
+Uncle installed on live on 9 Nov: the bundle version with `pms.mst_fin_year` →
+`pms.finyr_master` and a `::VARCHAR` cast on its message (without the cast
+Postgres 11 raises 42804 *structure of query does not match function result type*
+on every call).
 
 ## 6. Setup wizard
 
@@ -327,8 +327,8 @@ only place that maps them to HTTP.
 5. `finyr_master_validate` does not check the `YYYY-YYYY` format, the 1 April–31 March
    dates or the 9-character limit — we enforce them in the API.
 6. Confirm the 1 April rule for `fin_st_dt` and which company fields are mandatory.
-7. `mst_trust_validate` on live reads `pms.mst_fin_year`, which does not exist (`finyr_master`). Uncle said it was fixed on 9 Nov, but live still had the old text that evening (blocks trusts).
-8. `mst_trust_validate` also fails on every call in Postgres 11: `RETURNS TABLE (…, take_error_msg VARCHAR)` but the final `SELECT` returns `TEXT` → 42804. A `::VARCHAR` cast on the `CASE` fixes it.
+7. Done 9 Nov: Uncle installed the fixed `mst_trust_validate` (`finyr_master` + `::VARCHAR`) and `mst_trust_insert` on live. Worth one read-only check: `SELECT pg_get_functiondef('pms.mst_trust_validate'::regproc);`
+8. Trust delete / code change (Uncle: allowed while the trust has no transactions) needs DBA procedures and Utkarsh's OK on the contract.
 9. A procedure to change the current financial year, e.g. `pms.mst_finyr_set_current(take_finyr)` (blocks `PUT /financial-years/current`).
 10. How many future financial years may be created (built: `FY_FUTURE_YEARS`, default 1).
 11. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; it is stored as plain text, so encrypt it in the app before mail sending is built.

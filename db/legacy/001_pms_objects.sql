@@ -473,7 +473,7 @@ BEGIN
 END;
 $$;
 
--- ---- FUNC_pms.mst_trust_validate.txt (with TWO local fixes, marked below)
+-- ---- FUNC_pms.mst_trust_validate.txt (as installed on live by Uncle, 9 Nov 2026: finyr_master + ::VARCHAR)
 CREATE OR REPLACE FUNCTION pms.mst_trust_validate
 (
     take_trust_code     VARCHAR(3),
@@ -526,8 +526,6 @@ BEGIN
     ELSIF NOT EXISTS
     (
         SELECT 1
-        -- LOCAL FIX, not Uncle's text: live reads pms.mst_fin_year, which does not exist.
-        -- Replace this whole function with Uncle's corrected version before PR 2 leaves draft.
         FROM pms.finyr_master
         WHERE finyr = take_wrk_st_finyr
     ) THEN
@@ -545,8 +543,6 @@ BEGIN
     RETURN QUERY
     SELECT
         (v_error_msg = ''),
-        -- LOCAL FIX 2, not Uncle's text: without this cast Postgres 11 raises 42804
-        -- "structure of query does not match function result type" (TEXT vs VARCHAR) on every call.
         (CASE
             WHEN v_error_msg = '' THEN 'Validation successful'
             ELSE TRIM(v_error_msg)
