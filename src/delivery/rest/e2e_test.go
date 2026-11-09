@@ -71,6 +71,7 @@ func TestEndToEnd(t *testing.T) {
 		CORSAllowedOrigins: []string{"http://localhost:3000"},
 		RequestTimeout:     15 * time.Second,
 		LoginRateLimit:     1000,
+		FYFutureYears:      1,
 	}
 
 	_, err = database.NewManager(ctx, dsn, map[string]string{"esis": dsn, "alias": dsn + "&application_name=x"})
@@ -191,6 +192,8 @@ func TestEndToEnd(t *testing.T) {
 	curStart := domain_finyear.StartYearFor(time.Now().In(ist))
 	curFY := domain_finyear.FinYrLabel(curStart)
 	prevFY := domain_finyear.FinYrLabel(curStart - 1)
+	nextFY := domain_finyear.FinYrLabel(curStart + 1)
+	prevStartDate := fmt.Sprintf("%d-04-01", curStart-1)
 	curStartDate := fmt.Sprintf("%d-04-01", curStart)
 
 	company := map[string]any{
@@ -216,20 +219,25 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, "Create the financial year first", res.errMessage())
 	})
 
-	t.Run("financial year options are current and previous", func(t *testing.T) {
+	t.Run("financial year options are previous, current, then future, oldest first", func(t *testing.T) {
 		res := api.do("GET", "/api/v1/financial-years/options", esis, nil)
 		require.Equal(t, 200, res.status)
 		opts := res.list()
-		require.Len(t, opts, 2)
-		first := opts[0].(map[string]any)
-		assert.Equal(t, curFY, first["finyr"])
-		assert.Equal(t, curStartDate, first["finyr_st_date"])
-		assert.Equal(t, "current", first["kind"])
-		assert.Equal(t, prevFY, opts[1].(map[string]any)["finyr"])
+		require.Len(t, opts, 3)
+		prev, cur, next := opts[0].(map[string]any), opts[1].(map[string]any), opts[2].(map[string]any)
+		assert.Equal(t, prevFY, prev["finyr"])
+		assert.Equal(t, "previous", prev["kind"])
+		assert.Equal(t, curFY, cur["finyr"])
+		assert.Equal(t, curStartDate, cur["finyr_st_date"])
+		assert.Equal(t, "current", cur["kind"])
+		assert.Equal(t, nextFY, next["finyr"])
+		assert.Equal(t, "future", next["kind"])
+		assert.Equal(t, false, next["exists"])
 	})
 
 	t.Run("financial year rules", func(t *testing.T) {
-		for in, field := range map[string]string{"abc": "finyr", "2026-2028": "finyr", "1999-2000": "finyr"} {
+		tooFar := domain_finyear.FinYrLabel(curStart + 2)
+		for in, field := range map[string]string{"abc": "finyr", "2026-2028": "finyr", "1999-2000": "finyr", tooFar: "finyr"} {
 			res := api.do("POST", "/api/v1/financial-years/validate", esis, map[string]any{"finyr": in})
 			assert.Equal(t, 422, res.status, in)
 			assert.Contains(t, res.fieldErrors(), field, in)
@@ -276,6 +284,19 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, curFY, st.data()["current_financial_year"])
 	})
 
+	t.Run("a future year can be created and does not become current", func(t *testing.T) {
+		res := api.do("POST", "/api/v1/financial-years/", esis, map[string]any{"finyr": nextFY})
+		require.Equal(t, 201, res.status, res.body)
+		assert.Equal(t, nextFY, res.data()["finyr"])
+		assert.Equal(t, false, res.data()["finyr_is_current"])
+		assert.Equal(t, fmt.Sprintf("%d-04-01", curStart+1), res.data()["finyr_st_date"])
+
+		assert.Equal(t, curFY, api.do("GET", "/api/v1/financial-years/current", esis, nil).data()["finyr"])
+		assert.Len(t, api.do("GET", "/api/v1/financial-years/", esis, nil).list(), 3)
+		opts := api.do("GET", "/api/v1/financial-years/options", esis, nil).list()
+		assert.Equal(t, true, opts[2].(map[string]any)["exists"])
+	})
+
 	t.Run("company validate reports every problem at once", func(t *testing.T) {
 		bad := map[string]any{"name": "", "pin": "5600", "mobile": "123", "email": "x@", "fin_st_dt": "2026-08-15"}
 		res := api.do("POST", "/api/v1/company/validate", esis, bad)
@@ -299,6 +320,45 @@ func TestEndToEnd(t *testing.T) {
 		unknown := api.do("POST", "/api/v1/company/validate", esis, map[string]any{"name": "X", "sl": 5})
 		assert.Equal(t, 422, unknown.status)
 		assert.Equal(t, "is not an accepted field", unknown.fieldErrors()["sl"])
+	})
+
+	t.Run("company fin_st_dt must be the start of an existing financial year", func(t *testing.T) {
+		missing := clone(company)
+		missing["fin_st_dt"] = fmt.Sprintf("%d-04-01", curStart-3)
+		res := api.do("POST", "/api/v1/company/validate", esis, missing)
+		require.Equal(t, 422, res.status, res.body)
+		assert.Equal(t, "must be the start of an existing financial year", res.fieldErrors()["fin_st_dt"])
+
+		other := clone(company)
+		other["fin_st_dt"] = prevStartDate
+		ok := api.do("POST", "/api/v1/company/validate", esis, other)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Equal(t, prevStartDate, ok.data()["company"].(map[string]any)["fin_st_dt"])
+	})
+
+	taxDetails := map[string]any{
+		"pan_enabled": true, "pan_enabled_dt": curStartDate, "pan": "abcde1234f",
+		"gstin_enabled": true, "gstin_enabled_dt": curStartDate, "gstin": "29ABCDE1234F1ZW", "gstin_state": "",
+		"comm_mail_id": "Accounts@ESIS.in", "comm_mail_pwd": "mail-secret-1",
+		"comm_mobile": "+91 98765-43210", "comm_whatsapp": "9876543210",
+	}
+
+	t.Run("GST states are listed by code", func(t *testing.T) {
+		res := api.do("GET", "/api/v1/meta/gst-states", esis, nil)
+		require.Equal(t, 200, res.status)
+		states := res.list()
+		require.Len(t, states, 37)
+		assert.Equal(t, map[string]any{"code": "01", "name": "Jammu and Kashmir"}, states[0])
+		assert.Contains(t, states, map[string]any{"code": "29", "name": "Karnataka"})
+		assert.Equal(t, 401, api.do("GET", "/api/v1/meta/gst-states", "", nil).status)
+	})
+
+	t.Run("tax details need the company first", func(t *testing.T) {
+		assert.Equal(t, 404, api.do("GET", "/api/v1/company/tax-details", esis, nil).status)
+		res := api.do("PUT", "/api/v1/company/tax-details", esis, taxDetails)
+		assert.Equal(t, 409, res.status, res.body)
+		assert.Equal(t, "Save the company details first", res.errMessage())
+		assert.Equal(t, 409, api.do("POST", "/api/v1/company/tax-details/validate", esis, taxDetails).status)
 	})
 
 	var created map[string]any
@@ -335,6 +395,100 @@ func TestEndToEnd(t *testing.T) {
 		var rows int
 		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.company_master`).Scan(&rows))
 		assert.Equal(t, 1, rows, "only ever one company row")
+	})
+
+	t.Run("tax details: save, keep or clear the mail password, never return it", func(t *testing.T) {
+		storedPassword := func() *string {
+			var pwd *string
+			require.NoError(t, dbm.Control().QueryRow(ctx,
+				`SELECT comm_mail_pwd FROM pms.mst_company_tax_details WHERE sl = 1`).Scan(&pwd))
+			return pwd
+		}
+
+		res := api.do("PUT", "/api/v1/company/tax-details", esis, taxDetails)
+		require.Equal(t, 201, res.status, res.body)
+		d := res.data()
+		assert.Equal(t, float64(1), d["sl"])
+		assert.Equal(t, "ABCDE1234F", d["pan"])
+		assert.Equal(t, "Karnataka", d["gstin_state"], "filled from the GSTIN's state code")
+		assert.Equal(t, "accounts@esis.in", d["comm_mail_id"])
+		assert.Equal(t, "9876543210", d["comm_mobile"])
+		assert.Equal(t, curStartDate, d["pan_enabled_dt"])
+		assert.Equal(t, true, d["comm_mail_pwd_set"])
+		assert.NotContains(t, res.body, "mail-secret-1")
+		assert.NotContains(t, d, "comm_mail_pwd")
+		require.NotNil(t, storedPassword())
+		assert.Equal(t, "mail-secret-1", *storedPassword())
+
+		get := api.do("GET", "/api/v1/company/tax-details", esis, nil)
+		require.Equal(t, 200, get.status)
+		assert.NotContains(t, get.body, "mail-secret-1")
+		assert.Equal(t, true, get.data()["comm_mail_pwd_set"])
+
+		keep := clone(taxDetails)
+		delete(keep, "comm_mail_pwd")
+		keep["comm_whatsapp"] = "9123456780"
+		res = api.do("PUT", "/api/v1/company/tax-details", esis, keep)
+		require.Equal(t, 200, res.status, res.body)
+		assert.Equal(t, true, res.data()["comm_mail_pwd_set"], "no password sent keeps the stored one")
+		assert.Equal(t, "9123456780", res.data()["comm_whatsapp"])
+		assert.Equal(t, "mail-secret-1", *storedPassword())
+
+		keep["comm_mail_pwd"] = nil
+		require.Equal(t, 200, api.do("PUT", "/api/v1/company/tax-details", esis, keep).status)
+		assert.Equal(t, "mail-secret-1", *storedPassword(), "null keeps it too")
+
+		cleared := clone(keep)
+		cleared["comm_mail_pwd"] = ""
+		res = api.do("PUT", "/api/v1/company/tax-details", esis, cleared)
+		require.Equal(t, 200, res.status, res.body)
+		assert.Equal(t, false, res.data()["comm_mail_pwd_set"])
+		assert.Nil(t, storedPassword())
+
+		empty := api.do("PUT", "/api/v1/company/tax-details", esis, map[string]any{})
+		require.Equal(t, 200, empty.status, "nothing is mandatory")
+		assert.Equal(t, "", empty.data()["pan"])
+		assert.Nil(t, empty.data()["pan_enabled_dt"])
+
+		var rows int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_company_tax_details`).Scan(&rows))
+		assert.Equal(t, 1, rows)
+	})
+
+	t.Run("tax details report every problem in one 422", func(t *testing.T) {
+		bad := map[string]any{
+			"pan": "ABC12", "gstin": "29ABCDE1234F1ZX", "gstin_state": "Atlantis",
+			"comm_mail_id": "x@", "comm_mobile": "12345", "comm_whatsapp": "5876543210",
+		}
+		res := api.do("PUT", "/api/v1/company/tax-details", esis, bad)
+		require.Equal(t, 422, res.status, res.body)
+		f := res.fieldErrors()
+		assert.Equal(t, "must be a PAN like ABCDE1234F", f["pan"])
+		assert.Equal(t, "is not a valid GSTIN", f["gstin"])
+		for _, field := range []string{"gstin_state", "comm_mail_id", "comm_mobile", "comm_whatsapp"} {
+			assert.Contains(t, f, field)
+		}
+
+		mismatch := clone(taxDetails)
+		mismatch["pan"] = "ABCDE1234G"
+		mismatch["gstin_state"] = "Kerala"
+		res = api.do("POST", "/api/v1/company/tax-details/validate", esis, mismatch)
+		require.Equal(t, 422, res.status, res.body)
+		assert.Equal(t, "PAN inside GSTIN must match the PAN", res.fieldErrors()["gstin"])
+		assert.Equal(t, "does not match GSTIN state code 29 (Karnataka)", res.fieldErrors()["gstin_state"])
+
+		ok := api.do("POST", "/api/v1/company/tax-details/validate", esis, taxDetails)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Equal(t, true, ok.data()["valid"])
+		assert.Equal(t, "Karnataka", ok.data()["tax_details"].(map[string]any)["gstin_state"])
+
+		for _, serverOwned := range []string{"sl", "comm_mail_pwd_set", "rec_created_at"} {
+			body := clone(taxDetails)
+			body[serverOwned] = 1
+			res := api.do("PUT", "/api/v1/company/tax-details", esis, body)
+			assert.Equal(t, 422, res.status, serverOwned)
+			assert.Equal(t, "is not an accepted field", res.fieldErrors()[serverOwned], serverOwned)
+		}
 	})
 
 	t.Run("concurrent saves still leave one row", func(t *testing.T) {

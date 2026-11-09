@@ -8,12 +8,14 @@ import (
 	domain_company "github.com/utkarshk014/procurement-system-be/src/internal/domain/company"
 	domain_finyear "github.com/utkarshk014/procurement-system-be/src/internal/domain/finyear"
 	domain_setup "github.com/utkarshk014/procurement-system-be/src/internal/domain/setup"
+	domain_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/domain/taxdetails"
 	domain_tenant "github.com/utkarshk014/procurement-system-be/src/internal/domain/tenant"
 	"github.com/utkarshk014/procurement-system-be/src/internal/repository"
 	usecase_auth "github.com/utkarshk014/procurement-system-be/src/internal/usecase/auth"
 	usecase_company "github.com/utkarshk014/procurement-system-be/src/internal/usecase/company"
 	usecase_finyear "github.com/utkarshk014/procurement-system-be/src/internal/usecase/finyear"
 	usecase_setup "github.com/utkarshk014/procurement-system-be/src/internal/usecase/setup"
+	usecase_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/usecase/taxdetails"
 	usecase_tenant "github.com/utkarshk014/procurement-system-be/src/internal/usecase/tenant"
 	"github.com/utkarshk014/procurement-system-be/src/utils"
 )
@@ -25,6 +27,7 @@ type Usecases struct {
 	Setup         domain_setup.Usecase
 	FinancialYear domain_finyear.Usecase
 	Company       domain_company.Usecase
+	TaxDetails    domain_taxdetails.Usecase
 }
 
 // NewUsecases builds the use cases.
@@ -37,7 +40,8 @@ func NewUsecases(cfg *utils.Config, repos *repository.Repositories, databases do
 		Auth:          auth,
 		Tenant:        usecase_tenant.NewTenantUsecase(repos.Tenant, auth, databases, logger),
 		Setup:         usecase_setup.NewSetupUsecase(repos.FinancialYear, repos.Company),
-		FinancialYear: usecase_finyear.NewFinYearUsecase(repos.FinancialYear, cfg.Location(), logger),
+		FinancialYear: usecase_finyear.NewFinYearUsecase(repos.FinancialYear, cfg.Location(), cfg.FYFutureYears, logger),
 		Company:       usecase_company.NewCompanyUsecase(repos.Company, repos.FinancialYear, cfg.Location(), logger),
+		TaxDetails:    usecase_taxdetails.NewTaxDetailsUsecase(repos.TaxDetails, cfg.Location(), logger),
 	}
 }
