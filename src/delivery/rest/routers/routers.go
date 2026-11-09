@@ -14,6 +14,7 @@ import (
 	controllers_finyear "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/finyear"
 	controllers_meta "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/meta"
 	controllers_setup "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/setup"
+	controllers_taxdetails "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/taxdetails"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/middlewares"
 	rest_utils "github.com/utkarshk014/procurement-system-be/src/delivery/rest/utils"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
@@ -25,6 +26,7 @@ func SetMetaRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_
 	r.Route("/api/v1/meta", func(r chi.Router) {
 		r.Use(auth.VerifyToken)
 		r.Get("/indian-states", rest_utils.Wrap(logger, c.IndianStates))
+		r.Get("/gst-states", rest_utils.Wrap(logger, c.GSTStates))
 	})
 }
 
@@ -73,12 +75,15 @@ func SetFinYearRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controlle
 	})
 }
 
-// SetCompanyRoutes: wizard step 2, the single company record, tenant admins only.
-func SetCompanyRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_company.CompanyController, logger *slog.Logger) {
+// SetCompanyRoutes: the single company record (wizard step 2) and its tax and contact details (Form 3), tenant admins only.
+func SetCompanyRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_company.CompanyController, tax controllers_taxdetails.TaxDetailsController, logger *slog.Logger) {
 	r.Route("/api/v1/company", func(r chi.Router) {
 		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
 		r.Get("/", rest_utils.Wrap(logger, c.Get))
 		r.Put("/", rest_utils.Wrap(logger, c.Save))
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
+		r.Get("/tax-details", rest_utils.Wrap(logger, tax.Get))
+		r.Put("/tax-details", rest_utils.Wrap(logger, tax.Save))
+		r.Post("/tax-details/validate", rest_utils.Wrap(logger, tax.Validate))
 	})
 }

@@ -140,9 +140,18 @@ func (f *fakeRepo) Save(_ context.Context, c *domain_company.Company) (bool, err
 	return created, nil
 }
 
-type fakeFinYears struct{ current *domain_finyear.FinancialYear }
+type fakeFinYears struct {
+	current *domain_finyear.FinancialYear
+	others  []domain_finyear.FinancialYear // years that exist but are not current
+}
 
-func (f *fakeFinYears) List(context.Context) ([]domain_finyear.FinancialYear, error) { return nil, nil }
+func (f *fakeFinYears) List(context.Context) ([]domain_finyear.FinancialYear, error) {
+	years := append([]domain_finyear.FinancialYear{}, f.others...)
+	if f.current != nil {
+		years = append(years, *f.current)
+	}
+	return years, nil
+}
 func (f *fakeFinYears) Get(context.Context, string) (*domain_finyear.FinancialYear, error) {
 	return f.current, nil
 }
@@ -220,6 +229,27 @@ func TestFinStartDateDefaultsToCurrentYear(t *testing.T) {
 	c, _, err := uc.Save(tenantCtx(), in)
 	require.NoError(t, err)
 	assert.Equal(t, "2026-04-01", c.FinStartDate)
+}
+
+func TestFinStartDateMustBeAnExistingYearsStart(t *testing.T) {
+	years := withYear()
+	years.others = []domain_finyear.FinancialYear{{FinYr: "2025-2026", StartDate: "2025-04-01", EndDate: "2026-03-31"}}
+	uc := NewCompanyUsecase(&fakeRepo{procResult: domain_company.ProcedureResult{Valid: true}}, years, time.UTC, discard)
+
+	in := validInput()
+	in.FinStartDate = "2025-04-01"
+	c, err := uc.Validate(tenantCtx(), in)
+	require.NoError(t, err, "another existing year's start is fine")
+	assert.Equal(t, "2025-04-01", c.FinStartDate)
+
+	in.FinStartDate = "2024-04-01"
+	_, err = uc.Validate(tenantCtx(), in)
+	assert.True(t, domain.IsKind(err, domain.KindValidation))
+	assert.Equal(t, "must be the start of an existing financial year", fieldsOf(err)["fin_st_dt"])
+
+	in.FinStartDate = "2026-08-15"
+	_, err = uc.Validate(tenantCtx(), in)
+	assert.Equal(t, "must be 1 April (start of the Indian financial year)", fieldsOf(err)["fin_st_dt"], "the format rule is reported first")
 }
 
 func TestValidateMapsProcedureMessageToField(t *testing.T) {
