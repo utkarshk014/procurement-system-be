@@ -72,7 +72,8 @@ src/
 │   │   ├── tenant/                      Tenant, inputs, interfaces
 │   │   ├── setup/                       wizard Status and steps
 │   │   ├── finyear/                     FinancialYear, input, options, year maths, DBA-message map
-│   │   └── company/                     Company (sl = 1), CompanyInput, limits, DBA-message map
+│   │   ├── company/                     Company (sl = 1), CompanyInput, limits, DBA-message map
+│   │   └── trust/                       Trust (Form 4), inputs, code rule, DBA-message → field map
 │   ├── usecase/
 │   │   ├── index.go                     builds all use cases
 │   │   ├── common/validate.go           DTO validation → domain.Validation
@@ -80,20 +81,22 @@ src/
 │   │   ├── tenant/tenant.go             create tenant · list · create tenant admin
 │   │   ├── setup/setup.go               next wizard step from year + company state
 │   │   ├── finyear/finyear.go           options · rules · validate · create · list · current
-│   │   └── company/company.go           needs a year · normalise · check · validate · save · get
+│   │   ├── company/company.go           needs a year · normalise · check · validate · save · get
+│   │   └── trust/trust.go               normalise · check (FY exists, date inside it) · duplicates · validate · create · update
 │   └── repository/
 │       ├── index.go                     builds all repositories
 │       ├── pgutil/                      Querier, tenant pool lookup, PG error helpers
 │       ├── auth/postgres.go             sys_user · sys_refresh_token
 │       ├── tenant/postgres.go           sys_tenant
 │       ├── finyear/postgres.go          finyr_master + DBA function/procedure, locked txn
-│       └── company/postgres.go          company_master (sl = 1) + DBA function/procedure, locked txn
+│       ├── company/postgres.go          company_master (sl = 1) + DBA function/procedure, locked txn
+│       └── trust/postgres.go            mst_trust + DBA function/procedure, code/description checks in a locked txn
 ├── external/doc.go                      placeholder for third-party clients
 └── delivery/rest/
     ├── index.go                         router, middleware chain, http.Server
     ├── routers/routers.go               every route and its guards
     ├── middlewares/                     JWT auth · role/tenant guards · request id · request log
-    ├── controllers/{auth,admin,setup,finyear,company,meta}/
+    ├── controllers/{auth,admin,setup,finyear,company,trust,meta}/
     └── utils/                           JSON decode (strict), Respond, WriteError
 ```
 
@@ -171,6 +174,9 @@ There is no public sign-up. The first platform admin is created with the CLI.
 | `pms.company_master` | DBA (`gensuperuser`) | Company details, one row `sl = 1` | Read with `SELECT`; written only through the procedure |
 | `pms.company_master_validate(...)` | DBA | Returns `(is_valid, message)` | Called on validate, and again inside the save transaction |
 | `pms.company_master_insert(...)` | DBA | Upsert by `sl` | Called for every save with `sl = 1`. It does **not** validate, so we always validate first |
+| `pms.mst_trust` | DBA (v1.01) | Trusts (Form 4); PK `trust_code` (`^[A-Z]{3}$`), `trust_desc` UNIQUE (case-sensitive) | Read with `SELECT`; written only through the procedure |
+| `pms.mst_trust_validate(...)` | DBA (v1.01) | Returns one row `(is_valid, take_error_msg)`; problems joined by `. ` | Called on validate, and again inside the create/update transaction. **Broken on live** (see open items) |
+| `pms.mst_trust_insert(...)` | DBA (v1.01) | Upsert by `trust_code`, sets `last_update_at` | Called for create and update. **Not installed on live** |
 | `pms.sw_config`, `pms.config_sw_insert(...)` | DBA | App settings | Not used yet |
 | `pms.sys_tenant` / `sys_user` / `sys_refresh_token` | Us (migration 00001) | Platform | Tenants, logins, refresh tokens |
 | `pms.sys_schema_migrations` | Us (goose) | Migration bookkeeping | — |
@@ -179,6 +185,12 @@ There is no public sign-up. The first platform admin is created with the CLI.
 PROCUREMENT.ESIS bundle) so local Postgres and the end-to-end test run against
 the exact same functions and procedures. The bundle has no `CREATE TABLE` for
 `finyr_master` / `company_master`; those two are rebuilt from the live catalog.
+The v1.01 `mst_trust` table, `mst_trust_validate` and `mst_trust_insert` come from
+the v1.01 bundle. `mst_trust_validate` carries **two marked local fixes** so the
+tests can run: `pms.mst_fin_year` → `pms.finyr_master`, and a `::VARCHAR` cast on its
+message (without it Postgres 11 raises 42804 *structure of query does not match
+function result type* on every call). Replace it with Uncle's corrected text before
+the trust PR leaves draft.
 
 ## 6. Setup wizard
 
@@ -233,7 +245,27 @@ with sl=1, any alteration would update to same record"). The backend owns `sl`
 (never accepted from the client; unknown body fields are rejected) and
 `time_zone` (stamped on first save in `DEFAULT_TIMEZONE`, kept afterwards).
 
-## 8. Errors
+## 8. Trusts (Form 4)
+
+`trust_code` is the key: trim, upper-case, exactly 3 letters; it never changes and
+there is no delete. Rules, all field problems returned together:
+
+| Field | Rule |
+|---|---|
+| `trust_code` | required, `^[A-Z]{3}$`; not already used (409) |
+| `trust_desc` | required, ≤ 100; unique ignoring case among other trusts (409). Uncle's validate compares case-insensitively while the table's UNIQUE is case-sensitive: we follow the stricter rule |
+| `wrk_st_finyr` | required, must exist in `finyr_master` |
+| `wrk_st_date` | required, `YYYY-MM-DD`, inside `wrk_st_finyr` (1 April → 31 March; pending Uncle) |
+
+**Order:** our checks → duplicate code / description (409) → `mst_trust_validate`
+(each sentence mapped to a field; a duplicate description is a 409) → one
+transaction holding `pg_advisory_xact_lock(hashtext('pms.mst_trust'))`: for create
+the code must be free, for update it must exist; the description must be free;
+re-run the validate; `CALL pms.mst_trust_insert`. `mst_trust_insert` is an upsert,
+so without the lock and the "code is free" check a create could silently
+overwrite an existing trust.
+
+## 9. Errors
 
 Use cases return `domain.AppError`; `delivery/rest/utils.WriteError` is the
 only place that maps them to HTTP.
@@ -246,13 +278,13 @@ only place that maps them to HTTP.
 | `not_found` | 404 | Unknown record or route |
 | `method_not_allowed` | 405 | Route exists but not for this HTTP method |
 | `rate_limited` | 429 | Too many login attempts from one IP |
-| `conflict` | 409 | Duplicate financial year / overlap / tenant code / email / db_key; company before financial year |
+| `conflict` | 409 | Duplicate financial year / overlap / tenant code / email / db_key; company before financial year; trust code or description taken |
 | `validation_failed` | 422 | Field rules failed (with `fields[]`) |
 | `internal_error` | 500 | Anything unexpected; logged with cause, caller sees a generic message |
 | `service_unavailable` | 503 | A database could not be reached, or Postgres is shutting down or starting up |
 | `timeout` | 504 | The request ran past `REQUEST_TIMEOUT` (e.g. a stuck database) |
 
-## 9. Open items for the DBA
+## 10. Open items for the DBA
 
 1. Agree to the `pms.sys_*` tables (or provide a separate `platform` schema).
 2. `company_master.time_zone` is `TIMESTAMPTZ`, so the zone name is lost;
@@ -262,3 +294,7 @@ only place that maps them to HTTP.
 5. `finyr_master_validate` does not check the `YYYY-YYYY` format, the 1 April–31 March
    dates or the 9-character limit — we enforce them in the API.
 6. Confirm the 1 April rule for `fin_st_dt` and which company fields are mandatory.
+7. `mst_trust_validate` on live reads `pms.mst_fin_year`, which does not exist (`finyr_master`).
+8. `mst_trust_validate` also fails on every call in Postgres 11: `RETURNS TABLE (…, take_error_msg VARCHAR)` but the final `SELECT` returns `TEXT` → 42804. A `::VARCHAR` cast on the `CASE` fixes it.
+9. `mst_trust_insert` is not installed on live.
+10. Must a trust's `wrk_st_date` fall inside its `wrk_st_finyr`? Can a trust be deleted or its code changed? (built: inside; no; no)

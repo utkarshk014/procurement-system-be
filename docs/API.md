@@ -57,6 +57,11 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | GET | `/api/v1/company` | tenant_admin | The company (404 before first save) |
 | POST | `/api/v1/company/validate` | tenant_admin | Dry-run a save |
 | PUT | `/api/v1/company` | tenant_admin | Create (201) or update (200) the single company |
+| GET | `/api/v1/trusts` | tenant_admin | All trusts, sorted by code (`[]` when none) |
+| GET | `/api/v1/trusts/{code}` | tenant_admin | One trust (404 if unknown) |
+| POST | `/api/v1/trusts/validate` | tenant_admin | Dry-run a create |
+| POST | `/api/v1/trusts` | tenant_admin | Create a trust (201) |
+| PUT | `/api/v1/trusts/{code}` | tenant_admin | Update a trust (200); the code never changes |
 
 ---
 
@@ -240,6 +245,48 @@ Same fields **without** `sl`, `time_zone`, `rec_created_at` (sending them is a 4
 
 `201` first save (created) · `200` later saves (updated; `sl`, `time_zone`,
 `rec_created_at` kept) · `409` no financial year yet · `422` field errors.
+
+---
+
+## Trusts (tenant_admin, Form 4)
+
+A company has several trusts (ESIS: ACO, KHE, SAH, SAM, SAT). `trust_code` is the key
+and never changes; there is no delete. `{code}` in the path is upper-cased before lookup.
+
+### Trust object
+
+```json
+{ "trust_code": "SAT", "trust_desc": "Sri Adichunchanagiri Trust",
+  "wrk_st_finyr": "2026-2027", "wrk_st_date": "2026-04-01",
+  "rec_created_at": "2026-11-09T10:12:00Z", "last_update_at": "2026-11-09T10:12:00Z" }
+```
+
+### Body
+
+`POST /trusts` and `/trusts/validate`: `trust_code`, `trust_desc`, `wrk_st_finyr`, `wrk_st_date`.
+`PUT /trusts/{code}`: the same **without** `trust_code` (sending it is a 422).
+Server-owned `rec_created_at` / `last_update_at` are never accepted.
+
+| Field | Rule |
+|---|---|
+| `trust_code` | required, trim, upper-case, exactly 3 letters `^[A-Z]{3}$`; not already used (`409`, field `trust_code`: *is already taken*) |
+| `trust_desc` | required, trim, ≤ 100; unique **ignoring case** among other trusts (`409`, field `trust_desc`: *is already used by trust SAT*) |
+| `wrk_st_finyr` | required; must exist in `finyr_master` (*must be an existing financial year*) |
+| `wrk_st_date` | required, `YYYY-MM-DD`; must fall inside `wrk_st_finyr`, 1 April → 31 March (*must fall inside 2026-2027 (2026-04-01 to 2027-03-31)*). Pending Uncle's confirmation |
+
+After our checks, the DBA's `mst_trust_validate` runs; each sentence of its message
+is mapped to a field (`Trust code…` → `trust_code`, `Trust description…` → `trust_desc`,
+`…financial year…` → `wrk_st_finyr`, `Working start date…` → `wrk_st_date`, anything else → no field).
+
+### Responses
+
+| Endpoint | Success | Errors |
+|---|---|---|
+| `GET /trusts` | `200` list sorted by `trust_code` (empty list, not 404) | — |
+| `GET /trusts/{code}` | `200` the trust | `404` |
+| `POST /trusts/validate` | `200 { "valid": true, "trust": {…} }` | `409` code or description taken · `422` |
+| `POST /trusts` | `201` the trust | `409` code or description taken · `422` |
+| `PUT /trusts/{code}` | `200` the trust (`last_update_at` moves) | `404` · `409` description taken · `422` |
 
 ---
 

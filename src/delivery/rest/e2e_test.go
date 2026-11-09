@@ -191,6 +191,7 @@ func TestEndToEnd(t *testing.T) {
 	curStart := domain_finyear.StartYearFor(time.Now().In(ist))
 	curFY := domain_finyear.FinYrLabel(curStart)
 	prevFY := domain_finyear.FinYrLabel(curStart - 1)
+	prevStartDate := fmt.Sprintf("%d-04-01", curStart-1)
 	curStartDate := fmt.Sprintf("%d-04-01", curStart)
 
 	company := map[string]any{
@@ -358,6 +359,121 @@ func TestEndToEnd(t *testing.T) {
 		st := api.do("GET", "/api/v1/setup/status", esis, nil)
 		assert.Equal(t, "done", st.data()["next_step"])
 		assert.Equal(t, true, st.data()["company_done"])
+	})
+
+	t.Run("trusts: list, create, duplicates, rules, update", func(t *testing.T) {
+		empty := api.do("GET", "/api/v1/trusts/", esis, nil)
+		require.Equal(t, 200, empty.status, empty.body)
+		assert.NotNil(t, empty.list(), "an empty list, not 404")
+		assert.Len(t, empty.list(), 0)
+		assert.Equal(t, 403, api.do("GET", "/api/v1/trusts/", root, nil).status, "platform admin cannot use tenant routes")
+
+		sat := map[string]any{"trust_code": "sat", "trust_desc": "Sri Adichunchanagiri Trust", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate}
+		ok := api.do("POST", "/api/v1/trusts/validate", esis, sat)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Equal(t, true, ok.data()["valid"])
+		assert.Equal(t, "SAT", ok.data()["trust"].(map[string]any)["trust_code"])
+		assert.Len(t, api.do("GET", "/api/v1/trusts/", esis, nil).list(), 0, "validate writes nothing")
+
+		res := api.do("POST", "/api/v1/trusts/", esis, sat)
+		require.Equal(t, 201, res.status, res.body)
+		assert.Equal(t, "SAT", res.data()["trust_code"], "sat is stored as SAT")
+		assert.Equal(t, curFY, res.data()["wrk_st_finyr"])
+		assert.Equal(t, curStartDate, res.data()["wrk_st_date"])
+		assert.NotEmpty(t, res.data()["rec_created_at"])
+		firstUpdate := res.data()["last_update_at"]
+		require.NotEmpty(t, firstUpdate)
+
+		var code string
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT trust_code FROM pms.mst_trust`).Scan(&code))
+		assert.Equal(t, "SAT", code)
+
+		again := api.do("POST", "/api/v1/trusts/", esis, sat)
+		assert.Equal(t, 409, again.status)
+		assert.Equal(t, "is already taken", again.fieldErrors()["trust_code"])
+
+		sameDesc := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "ACU", "trust_desc": "SRI ADICHUNCHANAGIRI TRUST", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		assert.Equal(t, 409, sameDesc.status, sameDesc.body)
+		assert.Equal(t, "is already used by trust SAT", sameDesc.fieldErrors()["trust_desc"])
+
+		unknownFY := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "ACU", "trust_desc": "Adichunchanagiri University", "wrk_st_finyr": "1999-2000", "wrk_st_date": "1999-04-01",
+		})
+		assert.Equal(t, 422, unknownFY.status)
+		assert.Equal(t, "must be an existing financial year", unknownFY.fieldErrors()["wrk_st_finyr"])
+
+		outside := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "ACU", "trust_desc": "Adichunchanagiri University", "wrk_st_finyr": curFY, "wrk_st_date": fmt.Sprintf("%d-04-01", curStart+1),
+		})
+		assert.Equal(t, 422, outside.status)
+		assert.Contains(t, outside.fieldErrors()["wrk_st_date"], "must fall inside "+curFY)
+
+		badCode := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "AC1", "trust_desc": "", "wrk_st_finyr": "", "wrk_st_date": "",
+		})
+		assert.Equal(t, 422, badCode.status)
+		f := badCode.fieldErrors()
+		for _, field := range []string{"trust_code", "trust_desc", "wrk_st_finyr", "wrk_st_date"} {
+			assert.Contains(t, f, field)
+		}
+
+		acu := api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "ACU", "trust_desc": "Adichunchanagiri University", "wrk_st_finyr": prevFY, "wrk_st_date": prevStartDate,
+		})
+		require.Equal(t, 201, acu.status, acu.body)
+
+		list := api.do("GET", "/api/v1/trusts/", esis, nil).list()
+		require.Len(t, list, 2)
+		assert.Equal(t, "ACU", list[0].(map[string]any)["trust_code"], "sorted by code")
+		assert.Equal(t, "SAT", list[1].(map[string]any)["trust_code"])
+
+		one := api.do("GET", "/api/v1/trusts/sat", esis, nil)
+		require.Equal(t, 200, one.status)
+		assert.Equal(t, "Sri Adichunchanagiri Trust", one.data()["trust_desc"])
+		assert.Equal(t, 404, api.do("GET", "/api/v1/trusts/XYZ", esis, nil).status)
+
+		upd := api.do("PUT", "/api/v1/trusts/sat", esis, map[string]any{
+			"trust_desc": "Sri Adichunchanagiri Shikshana Trust", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		require.Equal(t, 200, upd.status, upd.body)
+		assert.Equal(t, "Sri Adichunchanagiri Shikshana Trust", upd.data()["trust_desc"])
+		assert.NotEqual(t, firstUpdate, upd.data()["last_update_at"], "last_update_at moves")
+		assert.Equal(t, res.data()["rec_created_at"], upd.data()["rec_created_at"])
+
+		taken := api.do("PUT", "/api/v1/trusts/SAT", esis, map[string]any{
+			"trust_desc": "adichunchanagiri university", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		assert.Equal(t, 409, taken.status)
+		assert.Equal(t, "is already used by trust ACU", taken.fieldErrors()["trust_desc"])
+
+		missing := api.do("PUT", "/api/v1/trusts/XYZ", esis, map[string]any{
+			"trust_desc": "Nobody", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		assert.Equal(t, 404, missing.status)
+
+		withCode := api.do("PUT", "/api/v1/trusts/SAT", esis, map[string]any{
+			"trust_code": "SAX", "trust_desc": "Renamed", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+		})
+		assert.Equal(t, 422, withCode.status, "a code never changes")
+		assert.Equal(t, "is not an accepted field", withCode.fieldErrors()["trust_code"])
+
+		var rows int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_trust`).Scan(&rows))
+		assert.Equal(t, 2, rows)
+	})
+
+	t.Run("racing creates of one trust code: one wins, none overwrite", func(t *testing.T) {
+		statuses := concurrently(6, func(i int) int {
+			return api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+				"trust_code": "KHE", "trust_desc": fmt.Sprintf("KHE Trust %d", i), "wrk_st_finyr": curFY, "wrk_st_date": curStartDate,
+			}).status
+		})
+		assert.Equal(t, []int{201, 409, 409, 409, 409, 409}, statuses)
+		var n int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_trust WHERE trust_code = 'KHE'`).Scan(&n))
+		assert.Equal(t, 1, n)
 	})
 
 	t.Run("second tenant on its own database is isolated, and its first saves are race-free", func(t *testing.T) {

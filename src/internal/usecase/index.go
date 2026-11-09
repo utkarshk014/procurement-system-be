@@ -9,12 +9,14 @@ import (
 	domain_finyear "github.com/utkarshk014/procurement-system-be/src/internal/domain/finyear"
 	domain_setup "github.com/utkarshk014/procurement-system-be/src/internal/domain/setup"
 	domain_tenant "github.com/utkarshk014/procurement-system-be/src/internal/domain/tenant"
+	domain_trust "github.com/utkarshk014/procurement-system-be/src/internal/domain/trust"
 	"github.com/utkarshk014/procurement-system-be/src/internal/repository"
 	usecase_auth "github.com/utkarshk014/procurement-system-be/src/internal/usecase/auth"
 	usecase_company "github.com/utkarshk014/procurement-system-be/src/internal/usecase/company"
 	usecase_finyear "github.com/utkarshk014/procurement-system-be/src/internal/usecase/finyear"
 	usecase_setup "github.com/utkarshk014/procurement-system-be/src/internal/usecase/setup"
 	usecase_tenant "github.com/utkarshk014/procurement-system-be/src/internal/usecase/tenant"
+	usecase_trust "github.com/utkarshk014/procurement-system-be/src/internal/usecase/trust"
 	"github.com/utkarshk014/procurement-system-be/src/utils"
 )
 
@@ -25,6 +27,7 @@ type Usecases struct {
 	Setup         domain_setup.Usecase
 	FinancialYear domain_finyear.Usecase
 	Company       domain_company.Usecase
+	Trust         domain_trust.Usecase
 }
 
 // NewUsecases builds the use cases.
@@ -39,5 +42,6 @@ func NewUsecases(cfg *utils.Config, repos *repository.Repositories, databases do
 		Setup:         usecase_setup.NewSetupUsecase(repos.FinancialYear, repos.Company),
 		FinancialYear: usecase_finyear.NewFinYearUsecase(repos.FinancialYear, cfg.Location(), logger),
 		Company:       usecase_company.NewCompanyUsecase(repos.Company, repos.FinancialYear, cfg.Location(), logger),
+		Trust:         usecase_trust.NewTrustUsecase(repos.Trust, repos.FinancialYear, logger),
 	}
 }

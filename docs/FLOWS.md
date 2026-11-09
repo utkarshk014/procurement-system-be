@@ -171,7 +171,33 @@ sequenceDiagram
 returns the record (404 before the first save). `PUT` replaces every editable
 field: send the full form; empty optional fields become `NULL`.
 
-## 8. What the frontend needs to know
+## 8. Trusts (Form 4)
+
+```mermaid
+sequenceDiagram
+    participant FE as Trusts page
+    participant UC as usecase/trust
+    participant R as repository/trust
+    participant T as Tenant DB
+    FE->>UC: POST /trusts {trust_code, trust_desc, wrk_st_finyr, wrk_st_date}
+    UC->>UC: trim · code upper-case, ^[A-Z]{3}$ · desc ≤ 100 · date format
+    UC->>R: finyr_master has wrk_st_finyr? date inside 1 Apr → 31 Mar? (else 422)
+    UC->>R: Create
+    R->>T: BEGIN · pg_advisory_xact_lock('pms.mst_trust')
+    R->>T: code already used? → 409 trust_code
+    R->>T: description used by another trust (ignoring case)? → 409 trust_desc
+    R->>T: SELECT is_valid, take_error_msg FROM pms.mst_trust_validate(…)
+    R->>R: each sentence → its field (422, or 409 for a duplicate description)
+    R->>T: CALL pms.mst_trust_insert(…)  (upsert; sets last_update_at)
+    R->>T: COMMIT
+    UC-->>FE: 201 the trust
+```
+
+`PUT /trusts/{code}` is the same with "the code must exist" (404) in place of
+"the code must be free", and the body has no `trust_code`. `POST /trusts/validate`
+runs every check without writing. `GET /trusts` is `[]` before the first trust.
+
+## 9. What the frontend needs to know
 
 | Need | How |
 |---|---|
@@ -180,6 +206,7 @@ field: send the full form; empty optional fields become `NULL`.
 | Year dropdown | `GET /financial-years/options` (`exists:true` → already created) |
 | Company form prefill | `GET /company` (404 = empty form) |
 | State dropdown | `GET /meta/indian-states` |
+| Trusts page | `GET /trusts` (list), `POST /trusts` (add), `PUT /trusts/{code}` (edit; code read-only), `GET /financial-years` for the year dropdown; 409s carry `fields` for `trust_code` / `trust_desc` |
 | Token expired | Any `401` → `POST /auth/refresh` once and retry; if that 401s, go to login |
 | Field errors | `error.fields[]` → show `message` under the input named `field` |
 | Support | Every response has `X-Request-Id`; errors include `request_id` |

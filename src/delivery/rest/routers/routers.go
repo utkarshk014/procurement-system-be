@@ -14,6 +14,7 @@ import (
 	controllers_finyear "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/finyear"
 	controllers_meta "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/meta"
 	controllers_setup "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/setup"
+	controllers_trust "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/trust"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/middlewares"
 	rest_utils "github.com/utkarshk014/procurement-system-be/src/delivery/rest/utils"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
@@ -80,5 +81,17 @@ func SetCompanyRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controlle
 		r.Get("/", rest_utils.Wrap(logger, c.Get))
 		r.Put("/", rest_utils.Wrap(logger, c.Save))
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
+	})
+}
+
+// SetTrustRoutes: the trust master (Form 4), tenant admins only. A trust code never changes and there is no delete.
+func SetTrustRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_trust.TrustController, logger *slog.Logger) {
+	r.Route("/api/v1/trusts", func(r chi.Router) {
+		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
+		r.Get("/", rest_utils.Wrap(logger, c.List))
+		r.Post("/", rest_utils.Wrap(logger, c.Create))
+		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
+		r.Get("/{code}", rest_utils.Wrap(logger, c.Get))
+		r.Put("/{code}", rest_utils.Wrap(logger, c.Update))
 	})
 }

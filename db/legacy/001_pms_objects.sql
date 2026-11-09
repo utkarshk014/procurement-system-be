@@ -369,3 +369,137 @@ END;
 $$;
 
 
+-- ---- tables_VER_01_1.txt (v1.01): mst_trust
+CREATE TABLE pms.mst_trust
+(
+    trust_code      VARCHAR(3) PRIMARY KEY,
+    trust_desc      VARCHAR(100) NOT NULL UNIQUE,
+    wrk_st_finyr    VARCHAR,
+    wrk_st_date     DATE,
+    rec_created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_update_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_trust_code
+        CHECK (trust_code ~ '^[A-Z]{3}$')
+);
+
+-- ---- FUNC_pms.mst_trust_validate.txt (with TWO local fixes, marked below)
+CREATE OR REPLACE FUNCTION pms.mst_trust_validate
+(
+    take_trust_code     VARCHAR(3),
+    take_trust_desc     VARCHAR(100),
+    take_wrk_st_finyr   VARCHAR,
+    take_wrk_st_date    DATE
+)
+RETURNS TABLE
+(
+    is_valid       BOOLEAN,
+    take_error_msg VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_error_msg TEXT := '';
+BEGIN
+
+    -- Validate Trust Code
+    IF take_trust_code IS NULL
+       OR take_trust_code !~ '^[A-Z]{3}$' THEN
+        v_error_msg := v_error_msg ||
+            'Trust code must contain exactly 3 uppercase alphabetic characters. ';
+    END IF;
+
+    -- Validate Trust Description
+    IF take_trust_desc IS NULL
+       OR TRIM(take_trust_desc) = '' THEN
+        v_error_msg := v_error_msg ||
+            'Trust description cannot be empty. ';
+    ELSE
+        IF EXISTS
+        (
+            SELECT 1
+            FROM pms.mst_trust
+            WHERE LOWER(TRIM(trust_desc)) =
+                  LOWER(TRIM(take_trust_desc))
+              AND trust_code IS DISTINCT FROM take_trust_code
+        ) THEN
+            v_error_msg := v_error_msg ||
+                'Trust description already exists. ';
+        END IF;
+    END IF;
+
+    -- Validate Financial Year
+    IF take_wrk_st_finyr IS NULL
+       OR TRIM(take_wrk_st_finyr) = '' THEN
+        v_error_msg := v_error_msg ||
+            'Working financial year is required. ';
+    ELSIF NOT EXISTS
+    (
+        SELECT 1
+        -- LOCAL FIX, not Uncle's text: live reads pms.mst_fin_year, which does not exist.
+        -- Replace this whole function with Uncle's corrected version before PR 2 leaves draft.
+        FROM pms.finyr_master
+        WHERE finyr = take_wrk_st_finyr
+    ) THEN
+        v_error_msg := v_error_msg ||
+            'Invalid financial year. Please select from mst_fin_year. ';
+    END IF;
+
+    -- Validate Working Start Date
+    IF take_wrk_st_date IS NULL THEN
+        v_error_msg := v_error_msg ||
+            'Working start date is required. ';
+    END IF;
+
+    -- Return Validation Result
+    RETURN QUERY
+    SELECT
+        (v_error_msg = ''),
+        -- LOCAL FIX 2, not Uncle's text: without this cast Postgres 11 raises 42804
+        -- "structure of query does not match function result type" (TEXT vs VARCHAR) on every call.
+        (CASE
+            WHEN v_error_msg = '' THEN 'Validation successful'
+            ELSE TRIM(v_error_msg)
+        END)::VARCHAR;
+
+END;
+$$;
+
+-- ---- PROC_pms.mst_trust_insert.txt (in the bundle; not yet installed on live)
+CREATE OR REPLACE PROCEDURE pms.mst_trust_insert
+(
+    take_trust_code     VARCHAR(3),
+    take_trust_desc     VARCHAR(100),
+    take_wrk_st_finyr   VARCHAR,
+    take_wrk_st_date    DATE
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+    INSERT INTO pms.mst_trust
+    (
+        trust_code,
+        trust_desc,
+        wrk_st_finyr,
+        wrk_st_date,
+        rec_created_at,
+        last_update_at
+    )
+    VALUES
+    (
+        take_trust_code,
+        take_trust_desc,
+        take_wrk_st_finyr,
+        take_wrk_st_date,
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+    )
+    ON CONFLICT (trust_code)
+    DO UPDATE SET
+        trust_desc     = EXCLUDED.trust_desc,
+        wrk_st_finyr   = EXCLUDED.wrk_st_finyr,
+        wrk_st_date    = EXCLUDED.wrk_st_date,
+        last_update_at = CURRENT_TIMESTAMP;
+
+END;
+$$;
