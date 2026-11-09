@@ -167,7 +167,8 @@ There is no public sign-up. The first platform admin is created with the CLI.
 |---|---|---|---|
 | `pms.finyr_master` | DBA (`gensuperuser`) | Financial years (PK `finyr`, check end ≥ start) | Read with `SELECT`; written only through the procedure |
 | `pms.finyr_master_validate(...)` | DBA | Returns `'SUCCESS'` or a message | Called on validate, and again inside the create transaction |
-| `pms.mst_finyr_insert(...)` | DBA | Insert; `is_current = true` un-marks the others; RAISEs on duplicates | Called for create. No update procedure exists |
+| `pms.mst_finyr_insert(...)` | DBA | Insert; `is_current = true` un-marks the others; RAISEs on duplicates | Called for create |
+| `pms.mst_finyr_set_current(take_finyr)` | **Proposed** (written by us, Uncle agreed 9 Nov; he installs it) | Marks one existing year current and un-marks the rest; RAISEs if missing | Called by `PUT /financial-years/current`. Not on live until Uncle installs it |
 | `pms.company_master` | DBA (`gensuperuser`) | Company details, one row `sl = 1` | Read with `SELECT`; written only through the procedure |
 | `pms.company_master_validate(...)` | DBA | Returns `(is_valid, message)` | Called on validate, and again inside the save transaction |
 | `pms.company_master_insert(...)` | DBA | Upsert by `sl` | Called for every save with `sl = 1`. It does **not** validate, so we always validate first |
@@ -179,6 +180,8 @@ There is no public sign-up. The first platform admin is created with the CLI.
 PROCUREMENT.ESIS bundle) so local Postgres and the end-to-end test run against
 the exact same functions and procedures. The bundle has no `CREATE TABLE` for
 `finyr_master` / `company_master`; those two are rebuilt from the live catalog.
+`mst_finyr_set_current` at the end of the file is **proposed**, not Uncle's yet:
+replace it with his installed text before the set-current PR leaves draft.
 
 ## 6. Setup wizard
 
@@ -200,6 +203,7 @@ that don't match the dates, and 18-month ranges.
 | Dates are 1 April → 31 March; sent dates must match | walkthrough ("1st April to 31st March of next year") |
 | Which year is current: while none is, the new one; else an explicit `finyr_is_current`; else today's year | decided inside the locked transaction, so creating the previous year first cannot leave it current (no procedure changes it later) |
 | Not a duplicate, no overlap | DBA function (re-run in a locked transaction) |
+| Change the current year later | `PUT /financial-years/current`: under the same advisory lock as create, check the year exists, then `CALL pms.mst_finyr_set_current`; already current is a no-op |
 
 ## 7. Company rules
 
@@ -258,7 +262,7 @@ only place that maps them to HTTP.
 2. `company_master.time_zone` is `TIMESTAMPTZ`, so the zone name is lost;
    `VARCHAR` holding `Asia/Kolkata` would keep it.
 3. A `rec_updated_at` column on `company_master`.
-4. No procedure to change which financial year is current (or edit one) after creation.
+4. Install the proposed `pms.mst_finyr_set_current(take_finyr)` (in `db/legacy`, agreed 9 Nov). There is still no way to edit or delete a year.
 5. `finyr_master_validate` does not check the `YYYY-YYYY` format, the 1 April–31 March
    dates or the 9-character limit — we enforce them in the API.
 6. Confirm the 1 April rule for `fin_st_dt` and which company fields are mandatory.

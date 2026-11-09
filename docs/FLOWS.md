@@ -142,6 +142,30 @@ example holds: configured on 02-11-2026 the choices are 2026-2027 and 2025-2026.
 DBA messages are mapped to fields: *already exists* and *overlap* → `409` on
 `finyr`; missing dates / end before start → `422` on the date fields.
 
+### Make another year current
+
+```mermaid
+sequenceDiagram
+    participant FE as Financial years page
+    participant UC as usecase/finyear
+    participant R as repository/finyear
+    participant T as Tenant DB
+    FE->>UC: PUT /financial-years/current {finyr:"2027-2028"}
+    UC->>UC: required · YYYY-YYYY consecutive
+    UC->>R: SetCurrent
+    R->>T: BEGIN · pg_advisory_xact_lock('pms.finyr_master')
+    R->>T: SELECT finyr_is_current … WHERE finyr = $1
+    alt no such year
+        R-->>FE: 422 finyr "must be an existing financial year"
+    else already current
+        R->>T: COMMIT (no change)
+    else
+        R->>T: CALL pms.mst_finyr_set_current($1)  (this one on, the rest off)
+        R->>T: COMMIT
+    end
+    UC-->>FE: 200 the year, finyr_is_current = true
+```
+
 ## 7. Wizard step 2 — company (single record, sl = 1)
 
 ```mermaid

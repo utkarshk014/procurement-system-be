@@ -369,3 +369,33 @@ END;
 $$;
 
 
+
+-- ---- PROPOSED, not in Uncle's bundle yet: PROC_pms.mst_finyr_set_current
+-- Written for Uncle to review and install on live (he agreed on 9 Nov 2026: "go ahead").
+-- Replace with his installed text before the PUT /financial-years/current PR leaves draft.
+CREATE OR REPLACE PROCEDURE pms.mst_finyr_set_current
+(
+    take_finyr   VARCHAR
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    IF take_finyr IS NULL OR TRIM(take_finyr) = '' THEN
+        RAISE EXCEPTION 'Financial year is required';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pms.finyr_master
+        WHERE finyr = take_finyr
+    ) THEN
+        RAISE EXCEPTION 'Financial year % does not exist', take_finyr;
+    END IF;
+
+    -- Exactly one current year: the chosen one on, every other one off.
+    UPDATE pms.finyr_master
+    SET finyr_is_current = (finyr = take_finyr)
+    WHERE finyr_is_current IS DISTINCT FROM (finyr = take_finyr);
+
+END;
+$$;

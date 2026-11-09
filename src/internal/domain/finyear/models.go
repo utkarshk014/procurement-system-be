@@ -34,6 +34,11 @@ type FinancialYearInput struct {
 	IsCurrent *bool  `json:"finyr_is_current"`
 }
 
+// SetCurrentInput is the body of PUT /financial-years/current.
+type SetCurrentInput struct {
+	FinYr string `json:"finyr" validate:"required"`
+}
+
 // Option is a financial year the setup form may offer.
 type Option struct {
 	FinYr     string `json:"finyr"`
@@ -90,6 +95,7 @@ var functionMessageField = map[string]struct {
 	"Financial year end date cannot be before start date":          {"finyr_end_date", false},
 	"Financial year dates overlap with an existing financial year": {"finyr", true},
 	"Financial year start date and end date are required":          {"finyr_st_date", false},
+	"Financial year does not exist":                                {"finyr", false},
 }
 
 // FunctionError turns a DBA function or procedure message into a field error.
@@ -98,6 +104,10 @@ func FunctionError(message string) error {
 	// The procedure's duplicate message names the year: "Financial year 2026-2027 already exists".
 	if !ok && strings.HasPrefix(message, "Financial year ") && strings.HasSuffix(message, " already exists") {
 		m = functionMessageField["Financial year already exists"]
+	}
+	// mst_finyr_set_current names the year too: "Financial year 2030-2031 does not exist".
+	if !ok && strings.HasPrefix(message, "Financial year ") && strings.HasSuffix(message, " does not exist") {
+		m = functionMessageField["Financial year does not exist"]
 	}
 	fe := domain.FieldError{Field: m.field, Message: message}
 	if m.conflict {

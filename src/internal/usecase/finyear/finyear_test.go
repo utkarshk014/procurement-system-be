@@ -55,6 +55,25 @@ func (f *fakeRepo) Create(ctx context.Context, fy *domain_finyear.FinancialYear,
 	return nil
 }
 
+func (f *fakeRepo) SetCurrent(_ context.Context, finYr string) (bool, error) {
+	idx := -1
+	for i := range f.years {
+		if f.years[i].FinYr == finYr {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return false, domain.Validation(domain.FieldError{Field: "finyr", Message: "must be an existing financial year"})
+	}
+	if f.years[idx].IsCurrent {
+		return false, nil
+	}
+	for i := range f.years {
+		f.years[i].IsCurrent = i == idx
+	}
+	return true, nil
+}
+
 func ctx() context.Context {
 	return domain.WithPrincipal(context.Background(), &domain.Principal{
 		UserID: 7, Role: domain.RoleTenantAdmin, TenantID: 1, DBKey: "esis",
@@ -221,4 +240,40 @@ func TestFunctionMessagesBecomeFieldErrors(t *testing.T) {
 	err = domain_finyear.FunctionError("Financial year end date cannot be before start date")
 	assert.True(t, domain.IsKind(err, domain.KindValidation))
 	assert.Contains(t, fields(err), "finyr_end_date")
+}
+
+func TestSetCurrentSwitchesTheOnlyCurrentYear(t *testing.T) {
+	repo := &fakeRepo{years: []domain_finyear.FinancialYear{
+		{FinYr: "2026-2027", IsCurrent: true}, {FinYr: "2027-2028"},
+	}}
+	uc := newAt(repo, 2026, time.November, 2)
+	fy, err := uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{FinYr: " 2027-2028 "})
+	require.NoError(t, err)
+	assert.Equal(t, "2027-2028", fy.FinYr)
+	assert.True(t, fy.IsCurrent)
+	cur, err := repo.Current(ctx())
+	require.NoError(t, err)
+	assert.Equal(t, "2027-2028", cur.FinYr)
+	assert.False(t, repo.years[0].IsCurrent, "the old one is un-marked")
+
+	again, err := uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{FinYr: "2027-2028"})
+	require.NoError(t, err, "already current is a no-op, not an error")
+	assert.True(t, again.IsCurrent)
+}
+
+func TestSetCurrentRejectsBadOrUnknownYears(t *testing.T) {
+	uc := newAt(&fakeRepo{years: []domain_finyear.FinancialYear{{FinYr: "2026-2027", IsCurrent: true}}}, 2026, time.November, 2)
+	_, err := uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{})
+	assert.Equal(t, "is required", fields(err)["finyr"])
+	_, err = uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{FinYr: "2026-2028"})
+	assert.Equal(t, "must look like 2026-2027 (two consecutive years)", fields(err)["finyr"])
+	_, err = uc.SetCurrent(ctx(), domain_finyear.SetCurrentInput{FinYr: "2030-2031"})
+	assert.True(t, domain.IsKind(err, domain.KindValidation))
+	assert.Equal(t, "must be an existing financial year", fields(err)["finyr"])
+}
+
+func TestSetCurrentProcedureMessagesMapToFinyr(t *testing.T) {
+	err := domain_finyear.FunctionError("Financial year 2030-2031 does not exist")
+	assert.True(t, domain.IsKind(err, domain.KindValidation))
+	assert.Equal(t, "Financial year 2030-2031 does not exist", fields(err)["finyr"])
 }

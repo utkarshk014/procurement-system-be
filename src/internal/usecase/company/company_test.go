@@ -158,6 +158,7 @@ func (f *fakeFinYears) CheckWithFunction(context.Context, *domain_finyear.Financ
 func (f *fakeFinYears) Create(context.Context, *domain_finyear.FinancialYear, domain_finyear.CurrentRule) error {
 	return nil
 }
+func (f *fakeFinYears) SetCurrent(context.Context, string) (bool, error) { return false, nil }
 
 func withYear() *fakeFinYears {
 	return &fakeFinYears{current: &domain_finyear.FinancialYear{

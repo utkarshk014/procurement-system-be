@@ -110,6 +110,31 @@ func (uc *finYearUsecase) Current(ctx context.Context) (*domain_finyear.Financia
 	return uc.repo.Current(ctx)
 }
 
+func (uc *finYearUsecase) SetCurrent(ctx context.Context, in domain_finyear.SetCurrentInput) (*domain_finyear.FinancialYear, error) {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	in.FinYr = strings.TrimSpace(in.FinYr)
+	if err := usecase_common.ValidateStruct(in); err != nil {
+		return nil, err
+	}
+	if _, ok := domain_finyear.ParseFinYr(in.FinYr); !ok {
+		return nil, domain.Validation(domain.FieldError{
+			Field: "finyr", Message: "must look like 2026-2027 (two consecutive years)",
+		})
+	}
+	changed, err := uc.repo.SetCurrent(ctx, in.FinYr)
+	if err != nil {
+		return nil, err
+	}
+	if changed {
+		uc.logger.InfoContext(ctx, "current financial year changed",
+			"tenant", p.TenantCode, "user_id", p.UserID, "finyr", in.FinYr)
+	}
+	return uc.repo.Get(ctx, in.FinYr)
+}
+
 // prepare applies the walkthrough's rules, fills the standard dates and returns the is_current rule.
 func (uc *finYearUsecase) prepare(in domain_finyear.FinancialYearInput) (*domain_finyear.FinancialYear, domain_finyear.CurrentRule, error) {
 	in.FinYr = strings.TrimSpace(in.FinYr)
