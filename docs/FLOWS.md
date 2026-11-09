@@ -253,7 +253,32 @@ sequenceDiagram
 "the code must be free", and the body has no `trust_code`. `POST /trusts/validate`
 runs every check without writing. `GET /trusts` is `[]` before the first trust.
 
-## 10. What the frontend needs to know
+## 10. Places, branches, regions and institutions (Form 5)
+
+```mermaid
+sequenceDiagram
+    participant FE as Institution form
+    participant UC as usecase/institution
+    participant R as repository/institution
+    participant T as Tenant DB
+    FE->>UC: GET /institutions/next-code?trust_code=SAT&regn_code=MYS
+    UC-->>FE: {inst_code: SAT-413, inst_reg_code: MYS-60}
+    FE->>UC: POST /institutions {trust_code, inst_code, inst_reg_code, inst_name, place_code, branch_code, from_fin_yr, contacts…}
+    UC->>UC: normalise · code shapes · prefix = trust · mobiles/emails · reg_date not future
+    UC->>R: trust, place, branch, region (reg prefix), financial year exist? (all problems in one 422)
+    UC->>R: Create (full code = inst_code:inst_reg_code)
+    R->>T: BEGIN · pg_advisory_xact_lock('pms.mst_inst')
+    R->>T: ACM / reg / full code used? → 409
+    R->>T: SELECT is_valid, error_message FROM pms.fn_mst_inst_validate(…)
+    R->>T: CALL pms.sp_mst_inst_insert(…)  (copies trust/place/branch names)
+    R->>T: COMMIT
+    UC-->>FE: 201 the institution
+```
+
+Places, branches and regions follow the same steps with `code` and `name` only, the
+DBA's `mst_*_validate` and `mst_*_insert`, and a lock per table.
+
+## 11. What the frontend needs to know
 
 | Need | How |
 |---|---|
@@ -265,6 +290,8 @@ runs every check without writing. `GET /trusts` is `[]` before the first trust.
 | GST state dropdown | `GET /meta/gst-states` (`code` + `name`) |
 | Tax details form | `GET /company/tax-details` (404 = empty form); `comm_mail_pwd_set` drives a "password saved — change?" field; send `comm_mail_pwd` only when typed |
 | Trusts page | `GET /trusts` (list), `POST /trusts` (add), `PUT /trusts/{code}` (edit; code read-only), `GET /financial-years` for the year dropdown; 409s carry `fields` for `trust_code` / `trust_desc` |
+| Places / branches / regions | `GET /places` (list), `POST /places` (add); same for `/branches`, `/regions`; no edit yet |
+| Institutions | `GET /institutions?trust_code=&branch_code=&place_code=&q=&page=` (paged), `GET /institutions/next-code` to pre-fill codes, `POST /institutions` (add), `GET /institutions/{code}` (details); no edit yet |
 | Token expired | Any `401` → `POST /auth/refresh` once and retry; if that 401s, go to login |
 | Field errors | `error.fields[]` → show `message` under the input named `field` |
 | Support | Every response has `X-Request-Id`; errors include `request_id` |

@@ -10,8 +10,10 @@ import (
 	"github.com/go-chi/httprate"
 	controllers_admin "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/admin"
 	controllers_auth "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/auth"
+	controllers_codelist "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/codelist"
 	controllers_company "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/company"
 	controllers_finyear "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/finyear"
+	controllers_institution "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/institution"
 	controllers_meta "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/meta"
 	controllers_setup "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/setup"
 	controllers_taxdetails "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/taxdetails"
@@ -99,5 +101,29 @@ func SetTrustRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
 		r.Get("/{code}", rest_utils.Wrap(logger, c.Get))
 		r.Put("/{code}", rest_utils.Wrap(logger, c.Update))
+	})
+}
+
+// SetCodeListRoute: one of Form 5's code lists (/places, /branches, /regions), tenant admins only.
+// There is no update or delete: the DBA has given only insert procedures.
+func SetCodeListRoute(r chi.Router, path string, auth middlewares.AuthMiddleware, c controllers_codelist.CodeListController, logger *slog.Logger) {
+	r.Route("/api/v1/"+path, func(r chi.Router) {
+		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
+		r.Get("/", rest_utils.Wrap(logger, c.List))
+		r.Post("/", rest_utils.Wrap(logger, c.Create))
+		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
+		r.Get("/{code}", rest_utils.Wrap(logger, c.Get))
+	})
+}
+
+// SetInstitutionRoutes: the institution master (Form 5), tenant admins only. No update or delete yet.
+func SetInstitutionRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_institution.InstitutionController, logger *slog.Logger) {
+	r.Route("/api/v1/institutions", func(r chi.Router) {
+		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
+		r.Get("/", rest_utils.Wrap(logger, c.List))
+		r.Post("/", rest_utils.Wrap(logger, c.Create))
+		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
+		r.Get("/next-code", rest_utils.Wrap(logger, c.NextCodes))
+		r.Get("/{code}", rest_utils.Wrap(logger, c.Get))
 	})
 }

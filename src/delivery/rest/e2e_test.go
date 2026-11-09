@@ -47,7 +47,7 @@ func TestEndToEnd(t *testing.T) {
 		tcpostgres.WithDatabase("esispms"),
 		tcpostgres.WithUsername("pms"),
 		tcpostgres.WithPassword("pms"),
-		tcpostgres.WithInitScripts(filepath.Join("..", "..", "..", "db", "legacy", "001_pms_objects.sql")),
+		tcpostgres.WithInitScripts(legacyScripts()...),
 		tcpostgres.BasicWaitStrategies(),
 	)
 	testcontainers.CleanupContainer(t, pg)
@@ -666,6 +666,169 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, 1, n)
 	})
 
+	t.Run("places, branches and regions: list, create, duplicates, rules", func(t *testing.T) {
+		for _, l := range []struct{ path, label string }{{"places", "Place"}, {"branches", "Branch"}, {"regions", "Region"}} {
+			base := "/api/v1/" + l.path + "/"
+			empty := api.do("GET", base, esis, nil)
+			require.Equal(t, 200, empty.status, empty.body)
+			assert.NotNil(t, empty.list(), "an empty list, not 404")
+			assert.Equal(t, 403, api.do("GET", base, root, nil).status, "platform admin cannot use tenant routes")
+
+			mys := map[string]any{"code": " mys ", "name": "  Mysore   " + l.label + " "}
+			ok := api.do("POST", base+"validate", esis, mys)
+			require.Equal(t, 200, ok.status, ok.body)
+			assert.Equal(t, "MYS", ok.data()["entry"].(map[string]any)["code"])
+			assert.Len(t, api.do("GET", base, esis, nil).list(), 0, "validate writes nothing")
+
+			res := api.do("POST", base, esis, mys)
+			require.Equal(t, 201, res.status, res.body)
+			assert.Equal(t, "MYS", res.data()["code"], "mys is stored as MYS")
+			assert.Equal(t, "Mysore "+l.label, res.data()["name"], "spaces are tidied")
+			assert.NotEmpty(t, res.data()["rec_created_at"])
+
+			again := api.do("POST", base, esis, mys)
+			assert.Equal(t, 409, again.status)
+			assert.Equal(t, "is already taken", again.fieldErrors()["code"])
+
+			sameName := api.do("POST", base, esis, map[string]any{"code": "MYZ", "name": "MYSORE " + strings.ToUpper(l.label)})
+			assert.Equal(t, 409, sameName.status, sameName.body)
+			assert.Equal(t, "is already used by MYS", sameName.fieldErrors()["name"])
+
+			bad := api.do("POST", base, esis, map[string]any{"code": "1 a", "name": ""})
+			assert.Equal(t, 422, bad.status)
+			assert.Equal(t, "must be exactly 3 letters, e.g. MYS", bad.fieldErrors()["code"], "Uncle's check only counts 3 characters")
+			assert.Equal(t, "is required", bad.fieldErrors()["name"])
+
+			require.Equal(t, 201, api.do("POST", base, esis, map[string]any{"code": "BGN", "name": "B G Nagara " + l.label}).status)
+			list := api.do("GET", base, esis, nil).list()
+			require.Len(t, list, 2)
+			assert.Equal(t, "BGN", list[0].(map[string]any)["code"], "sorted by name")
+
+			one := api.do("GET", base+"mys", esis, nil)
+			require.Equal(t, 200, one.status)
+			assert.Equal(t, "Mysore "+l.label, one.data()["name"])
+			assert.Equal(t, 404, api.do("GET", base+"XYZ", esis, nil).status)
+			assert.Equal(t, 405, api.do("PUT", base+"MYS", esis, map[string]any{"name": "x"}).status, "no edit procedure yet")
+
+			statuses := concurrently(4, func(i int) int {
+				return api.do("POST", base, esis, map[string]any{"code": "RAC", "name": fmt.Sprintf("Race %s %d", l.label, i)}).status
+			})
+			assert.Equal(t, []int{201, 409, 409, 409}, statuses, l.path)
+		}
+	})
+
+	t.Run("institutions: next code, create, duplicates, rules, list", func(t *testing.T) {
+		next := api.do("GET", "/api/v1/institutions/next-code?trust_code=sat&regn_code=mys", esis, nil)
+		require.Equal(t, 200, next.status, next.body)
+		assert.Equal(t, "SAT-001", next.data()["inst_code"])
+		assert.Equal(t, "MYS-01", next.data()["inst_reg_code"])
+
+		body := map[string]any{
+			"trust_code": "SAT", "inst_code": "sat-001", "inst_reg_code": "mys-01",
+			"inst_name": " BGS  Public School ", "inst_add": "Kuvempunagar", "inst_place": "Mysore (Kuvempunagar)",
+			"place_code": "MYS", "branch_code": "MYS", "from_fin_yr": curFY,
+			"inst_email": "Office@BGS.test", "inst_tel": "0821 2541234",
+			"inst_head_name": "Dr. Head", "inst_head_desig": "Principal", "inst_head_mobile": "+91 98450 12345", "inst_head_email": "head@bgs.test",
+			"inst_acnt_name": "Accounts", "inst_acnt_mobile": "09845012346",
+			"inst_liason_name": "Liaison", "inst_liason_desig": "Officer",
+		}
+		ok := api.do("POST", "/api/v1/institutions/validate", esis, body)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Equal(t, "SAT-001:MYS-01", ok.data()["institution"].(map[string]any)["inst_full_code"])
+		assert.Equal(t, float64(0), api.do("GET", "/api/v1/institutions/", esis, nil).data()["total"], "validate writes nothing")
+
+		res := api.do("POST", "/api/v1/institutions/", esis, body)
+		require.Equal(t, 201, res.status, res.body)
+		d := res.data()
+		assert.Equal(t, "SAT-001", d["inst_code"])
+		assert.Equal(t, "SAT-001:MYS-01", d["inst_full_code"], "14 characters, built by the server")
+		assert.Equal(t, "BGS Public School", d["inst_name"])
+		assert.Equal(t, "Sri Adichunchanagiri Shikshana Trust", d["trust_name"], "copied from the trust by the DBA's procedure")
+		assert.Equal(t, "Mysore Place", d["place_name"])
+		assert.Equal(t, "Mysore Branch", d["branch_name"])
+		assert.Equal(t, "9845012345", d["inst_head_mobile"], "mobiles are stored as 10 digits")
+		assert.Equal(t, "9845012346", d["inst_acnt_mobile"])
+		assert.Equal(t, "office@bgs.test", d["inst_email"])
+		assert.NotEmpty(t, d["reg_date"], "today when not sent")
+		assert.Equal(t, curFY, d["from_fin_yr"])
+
+		next = api.do("GET", "/api/v1/institutions/next-code?trust_code=SAT&regn_code=MYS", esis, nil)
+		assert.Equal(t, "SAT-002", next.data()["inst_code"])
+		assert.Equal(t, "MYS-02", next.data()["inst_reg_code"])
+
+		again := api.do("POST", "/api/v1/institutions/", esis, body)
+		assert.Equal(t, 409, again.status)
+		assert.Equal(t, "is already used by SAT-001", again.fieldErrors()["inst_code"])
+
+		sameReg := clone(body)
+		sameReg["inst_code"] = "SAT-002"
+		taken := api.do("POST", "/api/v1/institutions/", esis, sameReg)
+		assert.Equal(t, 409, taken.status)
+		assert.Equal(t, "is already used by SAT-001", taken.fieldErrors()["inst_reg_code"])
+
+		bad := api.do("POST", "/api/v1/institutions/", esis, map[string]any{
+			"trust_code": "SAT", "inst_code": "ACU-005", "inst_reg_code": "ZZZ-01", "inst_name": "",
+			"place_code": "XYZ", "branch_code": "XYZ", "from_fin_yr": "1999-2000", "reg_date": "2999-01-01",
+			"inst_head_mobile": "12345", "inst_email": "not-an-email",
+		})
+		assert.Equal(t, 422, bad.status, bad.body)
+		f := bad.fieldErrors()
+		assert.Equal(t, "must start with the trust code SAT-", f["inst_code"])
+		assert.Equal(t, "must start with an existing region code (ZZZ is not one)", f["inst_reg_code"])
+		assert.Equal(t, "is required", f["inst_name"])
+		assert.Equal(t, "must be an existing place", f["place_code"])
+		assert.Equal(t, "must be an existing branch", f["branch_code"])
+		assert.Equal(t, "must be an existing financial year", f["from_fin_yr"])
+		assert.Equal(t, "cannot be in the future", f["reg_date"])
+		assert.Contains(t, f, "inst_head_mobile")
+		assert.Contains(t, f, "inst_email")
+
+		nine := clone(body)
+		nine["inst_code"], nine["inst_reg_code"] = "SAT-00009", "MYS-09"
+		assert.Equal(t, "must be the trust code, a dash and 3 digits, e.g. SAT-001",
+			api.do("POST", "/api/v1/institutions/", esis, nine).fieldErrors()["inst_code"])
+
+		unknownTrust := clone(body)
+		unknownTrust["trust_code"], unknownTrust["inst_code"], unknownTrust["inst_reg_code"] = "ZZZ", "ZZZ-001", "MYS-05"
+		assert.Equal(t, "must be an existing trust", api.do("POST", "/api/v1/institutions/", esis, unknownTrust).fieldErrors()["trust_code"])
+
+		serverOwned := clone(body)
+		serverOwned["inst_full_code"] = "SAT-009:MYS-09"
+		assert.Equal(t, "is not an accepted field", api.do("POST", "/api/v1/institutions/", esis, serverOwned).fieldErrors()["inst_full_code"])
+
+		second := clone(body)
+		second["trust_code"], second["inst_code"], second["inst_reg_code"] = "ACU", "ACU-001", "BGN-01"
+		second["inst_name"], second["place_code"], second["branch_code"] = "AIMS", "BGN", "BGN"
+		second["from_fin_yr"] = prevFY
+		require.Equal(t, 201, api.do("POST", "/api/v1/institutions/", esis, second).status)
+
+		all := api.do("GET", "/api/v1/institutions/", esis, nil).data()
+		assert.Equal(t, float64(2), all["total"])
+		items := all["items"].([]any)
+		assert.Equal(t, "ACU-001:BGN-01", items[0].(map[string]any)["inst_full_code"], "sorted by full code")
+		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?trust_code=sat", esis, nil).data()["total"])
+		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?q=public", esis, nil).data()["total"])
+		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?q=acu-001", esis, nil).data()["total"])
+		assert.Equal(t, float64(0), api.do("GET", "/api/v1/institutions/?q=100%25", esis, nil).data()["total"])
+		paged := api.do("GET", "/api/v1/institutions/?page=2&page_size=1", esis, nil).data()
+		assert.Len(t, paged["items"], 1)
+		assert.Equal(t, "SAT-001:MYS-01", paged["items"].([]any)[0].(map[string]any)["inst_full_code"])
+		assert.Equal(t, 400, api.do("GET", "/api/v1/institutions/?page=0", esis, nil).status)
+
+		one := api.do("GET", "/api/v1/institutions/sat-001", esis, nil)
+		require.Equal(t, 200, one.status)
+		assert.Equal(t, "Dr. Head", one.data()["inst_head_name"])
+		assert.Equal(t, 404, api.do("GET", "/api/v1/institutions/SAT-999", esis, nil).status)
+		assert.Equal(t, 403, api.do("GET", "/api/v1/institutions/", root, nil).status)
+
+		statuses := concurrently(4, func(i int) int {
+			b := clone(body)
+			b["inst_code"], b["inst_reg_code"] = "SAT-050", fmt.Sprintf("MYS-%02d", 50+i)
+			return api.do("POST", "/api/v1/institutions/", esis, b).status
+		})
+		assert.Equal(t, []int{201, 409, 409, 409}, statuses)
+	})
+
 	t.Run("second tenant on its own database is isolated, and its first saves are race-free", func(t *testing.T) {
 		res := api.do("POST", "/api/v1/admin/tenants", root, map[string]any{"code": "TB", "name": "Tenant B", "db_key": "esis_b"})
 		require.Equal(t, 201, res.status, res.body)
@@ -923,11 +1086,23 @@ func createTenantDatabase(t *testing.T, ctx context.Context, dsn, name string) s
 	conn, err := pgx.Connect(ctx, other)
 	require.NoError(t, err)
 	defer conn.Close(ctx)
-	sql, err := os.ReadFile(filepath.Join("..", "..", "..", "db", "legacy", "001_pms_objects.sql"))
-	require.NoError(t, err)
-	_, err = conn.Exec(ctx, string(sql))
-	require.NoError(t, err)
+	for _, path := range legacyScripts() {
+		sql, err := os.ReadFile(path)
+		require.NoError(t, err)
+		_, err = conn.Exec(ctx, string(sql))
+		require.NoError(t, err, path)
+	}
 	return other
+}
+
+// legacyScripts are the DBA's objects plus our marked local fixes, in the order Postgres runs them.
+func legacyScripts() []string {
+	dir := filepath.Join("..", "..", "..", "db", "legacy")
+	return []string{
+		filepath.Join(dir, "001_pms_objects.sql"),
+		filepath.Join(dir, "002_form5_objects.sql"),
+		filepath.Join(dir, "003_local_fixes.sql"),
+	}
 }
 
 // concurrently runs fn n times at once and returns the results sorted.

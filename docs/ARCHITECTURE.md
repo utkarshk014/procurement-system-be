@@ -75,7 +75,9 @@ src/
 │   │   ├── finyear/                     FinancialYear, input, options, year maths, DBA-message map
 │   │   ├── company/                     Company (sl = 1), CompanyInput, limits, DBA-message map
 │   │   ├── taxdetails/                  TaxDetails (sl = 1, Form 3), input, write-only password
-│   │   └── trust/                       Trust (Form 4), inputs, code rule, DBA-message → field map
+│   │   ├── trust/                       Trust (Form 4), inputs, code rule, DBA-message → field map
+│   │   ├── codelist/                    Place · Branch · Region (Form 5): one Kind per list, Entry, DBA-message map
+│   │   └── institution/                 Institution (Form 5), code rules, full code, filter/page, DBA-message map
 │   ├── usecase/
 │   │   ├── index.go                     builds all use cases
 │   │   ├── common/validate.go           DTO validation → domain.Validation
@@ -85,7 +87,9 @@ src/
 │   │   ├── finyear/finyear.go           options · rules · validate · create · list · current
 │   │   ├── company/company.go           needs a year · normalise · check · validate · save · get
 │   │   ├── taxdetails/taxdetails.go     needs the company · normalise · check (all at once) · save · get
-│   │   └── trust/trust.go               normalise · check (FY exists, date inside it) · duplicates · validate · create · update
+│   │   ├── trust/trust.go               normalise · check (FY exists, date inside it) · duplicates · validate · create · update
+│   │   ├── codelist/codelist.go         one use case per list: normalise · duplicates · validate · create · list · get
+│   │   └── institution/institution.go   normalise · check (all at once) · lookups exist · next codes · validate · create · list
 │   └── repository/
 │       ├── index.go                     builds all repositories
 │       ├── pgutil/                      Querier, tenant pool lookup, PG error helpers
@@ -94,13 +98,15 @@ src/
 │       ├── finyear/postgres.go          finyr_master + DBA function/procedure, locked txn
 │       ├── company/postgres.go          company_master (sl = 1) + DBA function/procedure, locked txn
 │       ├── taxdetails/postgres.go       mst_company_tax_details (sl = 1) + DBA procedure, locked txn
-│       └── trust/postgres.go            mst_trust + DBA function/procedure, code/description checks in a locked txn
+│       ├── trust/postgres.go            mst_trust + DBA function/procedure, code/description checks in a locked txn
+│       ├── codelist/postgres.go         mst_place / mst_branch / mst_region + DBA function/procedure, locked txn
+│       └── institution/postgres.go      mst_inst + DBA function/procedure, paged search, next numbers, locked txn
 ├── external/doc.go                      placeholder for third-party clients
 └── delivery/rest/
     ├── index.go                         router, middleware chain, http.Server
     ├── routers/routers.go               every route and its guards
     ├── middlewares/                     JWT auth · role/tenant guards · request id · request log
-    ├── controllers/{auth,admin,setup,finyear,company,taxdetails,trust,meta}/
+    ├── controllers/{auth,admin,setup,finyear,company,taxdetails,trust,codelist,institution,meta}/
     └── utils/                           JSON decode (strict), Respond, WriteError
 ```
 
@@ -206,6 +212,15 @@ on every call).
 `mst_finyr_set_current` at the end of the file is the text Uncle installed on live
 on 9 Nov (we wrote it at his request).
 
+`002_form5_objects.sql` is Form 5 (places, branches, regions, institutions) verbatim from
+`TABLE_PROCEDURE_FUNCTION_1_1.xlsx`, installed on live on 9 Nov; `mst_branch_validate` is
+on live but not in the sheet, so its text comes from the live catalog.
+`003_local_fixes.sql` holds our **marked local fixes** to it, so institutions can be
+created locally and in the e2e test: `sp_mst_inst_insert` reads `trust_desc` (not the
+missing `trust_name`), and `inst_code` is 7 characters (not 9) in the table check, the
+procedure and the validate function. Live still has both bugs (open items); drop each
+fix once Uncle installs it.
+
 ## 6. Setup wizard
 
 The walkthrough's wizard, in order. `GET /setup/status` returns `next_step`.
@@ -303,7 +318,33 @@ re-run the validate; `CALL pms.mst_trust_insert`. `mst_trust_insert` is an upser
 so without the lock and the "code is free" check a create could silently
 overwrite an existing trust.
 
-## 10. Errors
+## 10. Places, branches, regions and institutions (Form 5)
+
+**Code lists.** `codelist.Kind` names a list's table, columns and DBA routines (all
+constants), and one repository, use case and controller serve all three. Code: trim,
+upper-case, `^[A-Z]{3}$`; name: spaces tidied, ≤ 250, unique ignoring case. Order: our
+checks → duplicates (409) → the DBA's validate function → one transaction holding
+`pg_advisory_xact_lock(hashtext('pms.mst_place'))` (per table): re-check, re-validate,
+`CALL` his insert. His inserts RAISE on duplicates (P0001), mapped the same way. No edit
+or delete: he has given no procedure for them.
+
+**Institutions.**
+
+| Rule | Why |
+|---|---|
+| `inst_code` = trust code + `-` + 3 digits, prefix must be `trust_code` | All 571 rows of `EXAMPLE INST.xlsx` (`ACU-009`) |
+| `inst_reg_code` = region code + `-` + 2 digits, prefix must be an existing region | The sheet's reg prefixes (BGN, CBP, MYS) are 23 area codes, not places; `mst_inst` has no region column (open item) |
+| `inst_full_code` = `inst_code:inst_reg_code`, built by the server | Always 14 characters, "ACM Code (14 Char.)" on the old screen |
+| Trust, place, branch, region, `from_fin_yr` must exist; all problems in one 422 | Same style as every other form |
+| Mobiles 10 digits after dropping `+91`/0; emails lower-case; `reg_date` defaults to today, never future | Same as the company form |
+| `*_sl_idx` sent as NULL | Uncle's sheet: "auto calculation to be made later" |
+| Next codes = highest number with that prefix + 1 | The old system numbers per trust and per region |
+
+Write order: our checks and lookups → ACM/reg/full code free (409) →
+`fn_mst_inst_validate` → one transaction holding `pg_advisory_xact_lock(hashtext('pms.mst_inst'))`:
+re-check the codes, re-validate, `CALL pms.sp_mst_inst_insert`.
+
+## 11. Errors
 
 Use cases return `domain.AppError`; `delivery/rest/utils.WriteError` is the
 only place that maps them to HTTP.
@@ -322,7 +363,7 @@ only place that maps them to HTTP.
 | `service_unavailable` | 503 | A database could not be reached, or Postgres is shutting down or starting up |
 | `timeout` | 504 | The request ran past `REQUEST_TIMEOUT` (e.g. a stuck database) |
 
-## 11. Open items for the DBA
+## 12. Open items for the DBA
 
 1. Agree to the `pms.sys_*` tables (or provide a separate `platform` schema).
 2. `company_master.time_zone` is `TIMESTAMPTZ`, so the zone name is lost;
@@ -338,3 +379,12 @@ only place that maps them to HTTP.
 10. PAN/GSTIN numbers are optional even when enabled, validated when keyed (Uncle, 9 Nov). Still open: is the enabled date the registration date, and may it be in the future? (built: not after today).
 11. Must a trust's `wrk_st_date` fall inside its `wrk_st_finyr`? (built: inside).
 12. Trust delete and edits (Uncle, 9 Nov): a trust may be deleted only while it has no transactions, and cannot be altered once transactions exist. There are no transaction tables yet, so neither is enforced; a delete needs a DBA procedure that checks for transactions (we have no `DELETE` right on `mst_trust`).
+13. Form 5, `sp_mst_inst_insert` reads `trust_name` from `mst_trust`; the column is `trust_desc`, so every institution insert fails on live (`column "trust_name" does not exist`). Fixed locally in `003_local_fixes.sql`.
+14. Form 5, `inst_code` is 9 characters in the table check, procedure and validate function, but the client's codes are 7 (`ACU-009`) and 7 + `:` + 6 = 14 is the full code. With 9, no full code can be 14, so nothing can be saved. We built 7; fixed locally.
+15. Form 5, `inst_reg_code` is UNIQUE, but the client's sheet reuses reg codes across trusts (`CBP-01` under ACU, OTU, SAM and SAT). Built: unique everywhere, as the table says.
+16. Form 5, the reg code prefix looks like the region code, but `mst_inst` has no `regn_code`. Built: the prefix must be an existing region.
+17. Form 5, no update or delete procedures for place, branch, region or institution, so nothing can be edited (the old screen has Edit/Save).
+18. Form 5, codes letters only? Uncle's checks only count 3 characters (`"1 a"` passes). Built: `^[A-Z]{3}$`, like trusts.
+19. Form 5, the old screen has an accountant designation but `mst_inst` has no `inst_acnt_desig`; the table has a liaison officer the screen does not. Built: the table's fields.
+20. Form 5, what is `reg_date`? Built: defaults to today, never in the future. Which fields are mandatory? Built: trust, codes, name, place, branch, start year.
+21. Form 5, `mst_branch` and `mst_inst` have no `last_update_at` trigger (place and region do).

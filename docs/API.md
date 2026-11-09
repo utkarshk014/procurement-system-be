@@ -67,6 +67,15 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | POST | `/api/v1/trusts/validate` | tenant_admin | Dry-run a create |
 | POST | `/api/v1/trusts` | tenant_admin | Create a trust (201) |
 | PUT | `/api/v1/trusts/{code}` | tenant_admin | Update a trust (200); the code never changes |
+| GET | `/api/v1/places` · `/branches` · `/regions` | tenant_admin | One code list, sorted by name (`[]` when none) |
+| GET | `/api/v1/places/{code}` (and the other two) | tenant_admin | One row (404 if unknown) |
+| POST | `/api/v1/places/validate` (and the other two) | tenant_admin | Dry-run a create |
+| POST | `/api/v1/places` (and the other two) | tenant_admin | Add a row (201) |
+| GET | `/api/v1/institutions` | tenant_admin | One page of institutions, filtered, sorted by full code |
+| GET | `/api/v1/institutions/{code}` | tenant_admin | One institution by ACM code (404 if unknown) |
+| GET | `/api/v1/institutions/next-code` | tenant_admin | Suggested next ACM and reg codes |
+| POST | `/api/v1/institutions/validate` | tenant_admin | Dry-run a create |
+| POST | `/api/v1/institutions` | tenant_admin | Add an institution (201) |
 
 ---
 
@@ -374,6 +383,107 @@ is mapped to a field (`Trust code…` → `trust_code`, `Trust description…` �
 | `POST /trusts/validate` | `200 { "valid": true, "trust": {…} }` | `409` code or description taken · `422` |
 | `POST /trusts` | `201` the trust | `409` code or description taken · `422` |
 | `PUT /trusts/{code}` | `200` the trust (`last_update_at` moves) | `404` · `409` description taken · `422` |
+
+---
+
+## Places, branches, regions (tenant_admin, Form 5)
+
+Three small lists an institution points into. They share one shape and one set of
+rules; only the path and the DBA objects differ (`pms.mst_place` / `mst_branch` /
+`mst_region`, each with an insert procedure and a validate function). There is **no
+edit or delete**: the DBA has given only insert procedures (open items).
+
+### Object and body
+
+```json
+{ "code": "MYS", "name": "Mysore", "rec_created_at": "2026-11-09T10:12:00Z", "last_update_at": null }
+```
+
+`POST` and `/validate` take `code` and `name` only.
+
+| Field | Rule |
+|---|---|
+| `code` | required, trim, upper-case, exactly 3 letters `^[A-Z]{3}$` (Uncle's own check only counts 3 characters; we keep the stricter trust rule, pending his answer); not already used (`409`, *is already taken*) |
+| `name` | required, spaces tidied, ≤ 250; unique **ignoring case** (`409`, *is already used by MYS*) |
+
+After our checks the DBA's validate function runs (it stops at its first problem; its
+`Place code…` / `Place name…` messages map to `code` / `name`, a duplicate is a 409),
+then one locked transaction re-checks and calls his insert procedure.
+
+| Endpoint | Success | Errors |
+|---|---|---|
+| `GET /places` | `200` list sorted by name | — |
+| `GET /places/{code}` | `200` the row | `404` |
+| `POST /places/validate` | `200 { "valid": true, "entry": {…} }` | `409` · `422` |
+| `POST /places` | `201` the row | `409` · `422` |
+
+---
+
+## Institutions (tenant_admin, Form 5)
+
+Company → Trust → Institution. An institution has an **ACM code** (`inst_code`, the
+trust code + a 3-digit number counted per trust, `SAT-001`), a **reg code**
+(`inst_reg_code`, a region code + a 2-digit number, `MYS-01`) and a **full code** built
+by the server as `inst_code:inst_reg_code` (`SAT-001:MYS-01`, 14 characters, as on the
+old system's "ACM Code (14 Char.)"). This follows all 571 rows of the client's sheet.
+Uncle's table says `inst_code` is 9 characters; with 9 no 14-character full code can be
+formed, so **creating an institution on live fails until he changes it to 7** (open items).
+There is no edit or delete yet (no DBA procedure).
+
+### Institution object
+
+```json
+{ "inst_code": "SAT-001", "inst_reg_code": "MYS-01", "inst_full_code": "SAT-001:MYS-01",
+  "inst_name": "BGS Public School", "inst_add": "Kuvempunagar", "inst_place": "Mysore (Kuvempunagar)",
+  "place_code": "MYS", "place_name": "Mysore", "branch_code": "MYB", "branch_name": "Mysore Branch",
+  "trust_code": "SAT", "trust_name": "Sri Adichunchanagiri Shikshana Trust",
+  "reg_date": "2026-11-09", "from_fin_yr": "2026-2027",
+  "inst_email": "office@bgs.test", "inst_tel": "0821 2541234",
+  "inst_head_name": "Dr. Head", "inst_head_desig": "Principal", "inst_head_mobile": "9845012345", "inst_head_email": "head@bgs.test",
+  "inst_acnt_name": "", "inst_acnt_mobile": "", "inst_acnt_email": "",
+  "inst_liason_name": "", "inst_liason_desig": "", "inst_liason_mobile": "", "inst_liason_email": "",
+  "rec_created_at": "2026-11-09T10:12:00Z", "last_update_at": null }
+```
+
+`place_name`, `branch_name` and `trust_name` are copied in by the DBA's procedure. JSON
+names are his columns, including the spelling `liason`.
+
+### Body (`POST /institutions` and `/validate`)
+
+Every field of the object except `inst_full_code`, the three `*_name` copies and the
+timestamps (sending them is a 422). All problems come back in one 422.
+
+| Field | Rule |
+|---|---|
+| `trust_code` | required, an existing trust |
+| `inst_code` | required, upper-cased, `^[A-Z]{3}-[0-9]{3}$` and must start with `trust_code` (*must start with the trust code SAT-*) |
+| `inst_reg_code` | required, upper-cased, `^[A-Z]{3}-[0-9]{2}$`, and its first 3 letters must be an existing region |
+| ACM, reg and full code | not already used (`409` on `inst_code` / `inst_reg_code`: *is already used by SAT-001*) |
+| `inst_name` | required, ≤ 250 · `inst_add`, `inst_place` ≤ 250 (free text locality) |
+| `place_code`, `branch_code` | required, existing place / branch |
+| `from_fin_yr` | required, an existing financial year (the screen offers current and previous) |
+| `reg_date` | optional `YYYY-MM-DD`, not in the future; today when left out |
+| `inst_email`, `inst_head_email`, `inst_acnt_email`, `inst_liason_email` | optional, valid email, stored lower-case |
+| `inst_head_mobile`, `inst_acnt_mobile`, `inst_liason_mobile` | optional; `+91`, spaces and a leading 0 are dropped, then exactly 10 digits |
+| `inst_tel` ≤ 100 · names and designations ≤ 100 | optional |
+
+After our checks the DBA's `fn_mst_inst_validate` runs; its first message is mapped to
+its field (`Invalid place code` → `place_code`, `Accountant mobile…` → `inst_acnt_mobile`, …).
+
+### `GET /institutions`
+
+Query: `trust_code`, `branch_code`, `place_code`, `q` (part of the name or full code),
+`page` (from 1), `page_size` (default 50, at most 200).
+
+```json
+{ "data": { "items": [ { …institution… } ], "total": 571, "page": 1, "page_size": 50 } }
+```
+
+### `GET /institutions/next-code?trust_code=SAT&regn_code=MYS`
+
+The highest number used with each prefix, plus one: `{ "inst_code": "SAT-413", "inst_reg_code": "MYS-60" }`.
+Either parameter may be left out (its field is then `""`); a prefix whose numbers are
+used up (999 / 99) also returns `""`.
 
 ---
 
