@@ -23,7 +23,7 @@ type Repository interface {
 	Get(ctx context.Context, code string) (*Institution, error)
 	// NextNumbers returns the next free number after the highest one used with each prefix.
 	NextNumbers(ctx context.Context, trustCode, regionCode string) (code, reg int, err error)
-	// Taken reports which of the codes are in use: the field name and the ACM code using it.
+	// Taken reports whether the ACM code or the reg code is in use: the field name and the ACM code using it.
 	Taken(ctx context.Context, in *Institution) (field, by string, err error)
 	// CheckWithFunction calls pms.fn_mst_inst_validate without writing.
 	CheckWithFunction(ctx context.Context, in *Institution) (*FunctionResult, error)

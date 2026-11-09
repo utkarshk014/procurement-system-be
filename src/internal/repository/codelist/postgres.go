@@ -37,7 +37,7 @@ func (r *postgresCodeListRepository) List(ctx context.Context) ([]domain_codelis
 	}
 	rows, err := pool.Query(ctx, r.selectSQL()+` ORDER BY LOWER(`+r.kind.NameCol+`), `+r.kind.CodeCol)
 	if err != nil {
-		return nil, domain.Internal("Could not list "+r.kind.Label+"s", err)
+		return nil, domain.Internal("Could not list "+r.kind.Plural, err)
 	}
 	defer rows.Close()
 	entries := []domain_codelist.Entry{}
@@ -49,7 +49,7 @@ func (r *postgresCodeListRepository) List(ctx context.Context) ([]domain_codelis
 		entries = append(entries, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, domain.Internal("Could not list "+r.kind.Label+"s", err)
+		return nil, domain.Internal("Could not list "+r.kind.Plural, err)
 	}
 	return entries, nil
 }
@@ -77,12 +77,14 @@ func (r *postgresCodeListRepository) NameTaken(ctx context.Context, name, except
 	return r.nameTaken(ctx, pool, name, exceptCode)
 }
 
-// nameTaken matches like the DBA's checks: LOWER(TRIM(...)), stricter than the table's UNIQUE.
+// nameTaken ignores case like the DBA's checks, and also runs of spaces, because we store names
+// with single spaces: an older row "Mysore  Place" must still block "Mysore Place".
 func (r *postgresCodeListRepository) nameTaken(ctx context.Context, q pgutil.Querier, name, exceptCode string) (string, bool, error) {
 	var code string
 	err := q.QueryRow(ctx, `
 		SELECT `+r.kind.CodeCol+` FROM `+r.kind.Table+`
-		WHERE LOWER(TRIM(`+r.kind.NameCol+`)) = LOWER(TRIM($1)) AND `+r.kind.CodeCol+` <> $2
+		WHERE regexp_replace(LOWER(TRIM(`+r.kind.NameCol+`)), '\s+', ' ', 'g') = regexp_replace(LOWER(TRIM($1)), '\s+', ' ', 'g')
+		  AND `+r.kind.CodeCol+` <> $2
 		ORDER BY `+r.kind.CodeCol+` LIMIT 1`, name, exceptCode).Scan(&code)
 	switch {
 	case err == nil:
@@ -126,7 +128,7 @@ func (r *postgresCodeListRepository) Create(ctx context.Context, e *domain_codel
 	}
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, r.lockSQL()); err != nil {
-			return domain.Internal("Could not lock "+r.kind.Label+"s", err)
+			return domain.Internal("Could not lock "+r.kind.Plural, err)
 		}
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM `+r.kind.Table+` WHERE `+r.kind.CodeCol+` = $1)`,

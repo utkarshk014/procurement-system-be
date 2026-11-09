@@ -714,7 +714,28 @@ func TestEndToEnd(t *testing.T) {
 				return api.do("POST", base, esis, map[string]any{"code": "RAC", "name": fmt.Sprintf("Race %s %d", l.label, i)}).status
 			})
 			assert.Equal(t, []int{201, 409, 409, 409}, statuses, l.path)
+
+			// Different codes, names that differ only in case: the table's UNIQUE is case-sensitive,
+			// so only the per-table lock stops two of these from being saved together.
+			for round := 0; round < 5; round++ {
+				statuses = concurrently(8, func(i int) int {
+					name := fmt.Sprintf("Case race %s %d", l.label, round)
+					if i%2 == 1 {
+						name = strings.ToUpper(name)
+					}
+					code := string(rune('A'+round)) + string(rune('A'+i)) + "Z"
+					return api.do("POST", base, esis, map[string]any{"code": code, "name": name}).status
+				})
+				assert.Equal(t, []int{201, 409, 409, 409, 409, 409, 409, 409}, statuses, "%s round %d", l.path, round)
+			}
 		}
+
+		// A row written outside the app with two spaces still blocks the same name with one.
+		_, err := dbm.Control().Exec(ctx, `INSERT INTO pms.mst_place (place_code, place_name) VALUES ('OLD', 'Old  Town')`)
+		require.NoError(t, err)
+		spaced := api.do("POST", "/api/v1/places/", esis, map[string]any{"code": "OLT", "name": "old town"})
+		assert.Equal(t, 409, spaced.status, spaced.body)
+		assert.Equal(t, "is already used by OLD", spaced.fieldErrors()["name"])
 	})
 
 	t.Run("institutions: next code, create, duplicates, rules, list", func(t *testing.T) {
@@ -809,7 +830,9 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?trust_code=sat", esis, nil).data()["total"])
 		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?q=public", esis, nil).data()["total"])
 		assert.Equal(t, float64(1), api.do("GET", "/api/v1/institutions/?q=acu-001", esis, nil).data()["total"])
-		assert.Equal(t, float64(0), api.do("GET", "/api/v1/institutions/?q=100%25", esis, nil).data()["total"])
+		// % and _ are searched as themselves, not as LIKE wildcards that would match every row.
+		assert.Equal(t, float64(0), api.do("GET", "/api/v1/institutions/?q=%25", esis, nil).data()["total"])
+		assert.Equal(t, float64(0), api.do("GET", "/api/v1/institutions/?q=_", esis, nil).data()["total"])
 		paged := api.do("GET", "/api/v1/institutions/?page=2&page_size=1", esis, nil).data()
 		assert.Len(t, paged["items"], 1)
 		assert.Equal(t, "SAT-001:MYS-01", paged["items"].([]any)[0].(map[string]any)["inst_full_code"])

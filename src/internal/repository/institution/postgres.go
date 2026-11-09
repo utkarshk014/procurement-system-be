@@ -147,12 +147,12 @@ func (r *postgresInstitutionRepository) Taken(ctx context.Context, in *domain_in
 	return taken(ctx, pool, in)
 }
 
-// taken checks the three UNIQUE codes in the order a person reads them.
+// taken checks the ACM code, then the reg code. The full code needs no check of its own: it is
+// inst_code ':' inst_reg_code, so it is free whenever the ACM code is.
 func taken(ctx context.Context, q pgutil.Querier, in *domain_institution.Institution) (string, string, error) {
 	checks := []struct{ field, col, value string }{
 		{"inst_code", "inst_code", in.Code},
 		{"inst_reg_code", "inst_reg_code", in.RegCode},
-		{"inst_code", "inst_full_code", in.FullCode},
 	}
 	for _, c := range checks {
 		var by string
@@ -240,8 +240,12 @@ func (r *postgresInstitutionRepository) Create(ctx context.Context, i *domain_in
 			if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
 				return domain_institution.FunctionError(pgErr.Message)
 			}
-			if _, ok := pgutil.UniqueViolation(err); ok {
-				return domain_institution.CodeTaken("inst_code", "")
+			if constraint, ok := pgutil.UniqueViolation(err); ok {
+				field := "inst_code"
+				if constraint == "mst_inst_inst_reg_code_key" {
+					field = "inst_reg_code"
+				}
+				return domain_institution.CodeTaken(field, "")
 			}
 			return domain.Internal("Could not save institution", err)
 		}
