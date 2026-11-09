@@ -161,7 +161,8 @@ func trimDate(d *string) *string {
 }
 
 // Check returns every rule the normalised input breaks; today is YYYY-MM-DD in the tenant's zone.
-// No field is mandatory; anything entered must be valid.
+// No field is mandatory, not even the number when PAN/GSTIN is enabled (Uncle, 9 Nov 2026:
+// "optional, but if they key PAN or GSTIN we should validate it"); anything entered must be valid.
 func Check(in domain_taxdetails.TaxDetailsInput, today string) []domain.FieldError {
 	fields := usecase_common.ToFieldErrors(validation.Struct(in))
 	has := map[string]bool{}
@@ -178,9 +179,6 @@ func Check(in domain_taxdetails.TaxDetailsInput, today string) []domain.FieldErr
 	// PAN
 	if in.PAN != "" && !validation.IsPAN(in.PAN) {
 		add("pan", "must be a PAN like ABCDE1234F")
-	}
-	if in.PANEnabled && in.PAN == "" {
-		add("pan", "is required when PAN is enabled")
 	}
 	checkEnabledDate(in.PANEnabled, in.PANEnabledDate, "pan_enabled_dt", "PAN", today, add)
 
@@ -200,9 +198,6 @@ func Check(in domain_taxdetails.TaxDetailsInput, today string) []domain.FieldErr
 		if gstinValid && in.PAN != "" && validation.IsPAN(in.PAN) && !validation.GSTINMatchesPAN(in.GSTIN, in.PAN) {
 			add("gstin", "PAN inside GSTIN must match the PAN")
 		}
-	}
-	if in.GSTINEnabled && in.GSTIN == "" {
-		add("gstin", "is required when GSTIN is enabled")
 	}
 	checkEnabledDate(in.GSTINEnabled, in.GSTINEnabledDate, "gstin_enabled_dt", "GSTIN", today, add)
 

@@ -82,10 +82,13 @@ func TestCheckReportsEveryProblemAtOnce(t *testing.T) {
 	assert.Equal(t, "must be a date in YYYY-MM-DD format", f["gstin_enabled_dt"])
 }
 
-func TestEnabledNeedsTheNumber(t *testing.T) {
-	f := checkFields(domain_taxdetails.TaxDetailsInput{PANEnabled: true, GSTINEnabled: true})
-	assert.Equal(t, "is required when PAN is enabled", f["pan"])
-	assert.Equal(t, "is required when GSTIN is enabled", f["gstin"])
+// Uncle, 9 Nov 2026: the numbers are optional even when enabled, but validated when keyed.
+func TestEnabledDoesNotRequireTheNumber(t *testing.T) {
+	assert.Empty(t, checkFields(domain_taxdetails.TaxDetailsInput{PANEnabled: true, GSTINEnabled: true}))
+
+	f := checkFields(domain_taxdetails.TaxDetailsInput{PANEnabled: true, PAN: "bad", GSTINEnabled: true, GSTIN: "29ABCDE1234F1ZX"})
+	assert.Equal(t, "must be a PAN like ABCDE1234F", f["pan"])
+	assert.Equal(t, "is not a valid GSTIN", f["gstin"])
 }
 
 func TestEnabledDateCannotBeInTheFuture(t *testing.T) {

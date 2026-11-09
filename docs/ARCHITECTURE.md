@@ -253,7 +253,7 @@ one 422.
 | Field | Rule |
 |---|---|
 | `pan` | trim, upper-case; `IsPAN` |
-| `pan_enabled`, `pan_enabled_dt` | `true` → `pan` required. The date is only allowed when enabled, cannot be after today, and defaults to today |
+| `pan_enabled`, `pan_enabled_dt` | The number stays optional when enabled (Uncle: "optional, but if they key PAN or GSTIN we should validate it"). The date is only allowed when enabled, cannot be after today, and defaults to today |
 | `gstin` | trim, upper-case; `IsGSTIN` (format + check digit); first 2 digits a code from `GSTStates`; if `pan` is filled, characters 3–12 must equal it |
 | `gstin_enabled`, `gstin_enabled_dt` | as for PAN, against `gstin` |
 | `gstin_state` | ≤ 100, official spelling from `GSTStates`. With a GSTIN: empty → filled from its code; filled → must match its code |
@@ -298,5 +298,5 @@ only place that maps them to HTTP.
 7. `mst_trust_validate` reads `pms.mst_fin_year`, which does not exist (`finyr_master`); `mst_trust_insert` is not installed on live (blocks trusts).
 8. A procedure to change the current financial year, e.g. `pms.mst_finyr_set_current(take_finyr)` (blocks `PUT /financial-years/current`).
 9. How many future financial years may be created (built: `FY_FUTURE_YEARS`, default 1).
-10. What `comm_mail_pwd` is for, and whether it must be stored in plain text (built: write-only, never returned or logged).
-11. When PAN/GSTIN is enabled, is the number required, and may the enabled date be in the future? (built: required; not after today).
+10. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; whether it may stay plain text in the table is still open.
+11. PAN/GSTIN numbers are optional even when enabled, validated when keyed (Uncle, 9 Nov). Still open: is the enabled date the registration date, and may it be in the future? (built: not after today).

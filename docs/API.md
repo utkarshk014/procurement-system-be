@@ -276,7 +276,7 @@ No field is mandatory; anything entered must be valid.
 | Field | Rule (checked only when filled) |
 |---|---|
 | `pan` | trim, upper-case; a PAN like `ABCDE1234F` |
-| `pan_enabled` | bool, default `false`. `true` → `pan` required |
+| `pan_enabled` | bool, default `false`. The number stays optional when enabled (Uncle, 9 Nov) |
 | `pan_enabled_dt` | `YYYY-MM-DD`, not after today. Only allowed when `pan_enabled`; enabled with no date → today |
 | `gstin` | trim, upper-case; valid GSTIN (format + check digit); first 2 digits a code from `/meta/gst-states`; if `pan` is filled, characters 3–12 must equal it |
 | `gstin_enabled`, `gstin_enabled_dt` | same as PAN, against `gstin` |
@@ -285,7 +285,7 @@ No field is mandatory; anything entered must be valid.
 | `comm_mail_pwd` | write-only, ≤ 150, not trimmed. Missing or `null` → keep the stored one; `""` → clear it; text → replace it |
 | `comm_mobile`, `comm_whatsapp` | 10-digit Indian mobile; `+91`, spaces, dashes accepted |
 
-Example messages: `pan`: *must be a PAN like ABCDE1234F*, *is required when PAN is enabled* ·
+Example messages: `pan`: *must be a PAN like ABCDE1234F* ·
 `gstin`: *is not a valid GSTIN*, *PAN inside GSTIN must match the PAN* ·
 `gstin_state`: *does not match GSTIN state code 29 (Karnataka)* ·
 `pan_enabled_dt`: *cannot be after today (2026-11-09)*, *can only be set when PAN is enabled*.
