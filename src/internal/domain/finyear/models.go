@@ -39,12 +39,19 @@ type SetCurrentInput struct {
 	FinYr string `json:"finyr" validate:"required"`
 }
 
-// Option is a financial year the setup form may offer.
+// Option kinds, relative to today's financial year.
+const (
+	KindPrevious = "previous"
+	KindCurrent  = "current"
+	KindFuture   = "future"
+)
+
+// Option is a financial year that may be created: the previous one, the current one, or a future one.
 type Option struct {
 	FinYr     string `json:"finyr"`
 	StartDate string `json:"finyr_st_date"`
 	EndDate   string `json:"finyr_end_date"`
-	Kind      string `json:"kind"` // "current" or "previous"
+	Kind      string `json:"kind"` // KindPrevious, KindCurrent or KindFuture
 	Exists    bool   `json:"exists"`
 }
 

@@ -4,7 +4,7 @@ import "context"
 
 // Usecase is financial-year setup for the caller's tenant (wizard step 1).
 type Usecase interface {
-	// Options lists the years that may be created today: current and previous.
+	// Options lists the years that may be created today: previous, current, then future years, oldest first.
 	Options(ctx context.Context) ([]Option, error)
 	// Validate is a dry run of Create.
 	Validate(ctx context.Context, in FinancialYearInput) (*FinancialYear, error)

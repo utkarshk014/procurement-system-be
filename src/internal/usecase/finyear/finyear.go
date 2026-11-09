@@ -12,21 +12,24 @@ import (
 )
 
 type finYearUsecase struct {
-	repo     domain_finyear.Repository
-	location *time.Location
-	logger   *slog.Logger
-	now      func() time.Time
+	repo        domain_finyear.Repository
+	location    *time.Location
+	futureYears int
+	logger      *slog.Logger
+	now         func() time.Time
 }
 
-// NewFinYearUsecase builds financial-year setup; location decides what "today" is.
-func NewFinYearUsecase(repo domain_finyear.Repository, location *time.Location, logger *slog.Logger) domain_finyear.Usecase {
-	return &finYearUsecase{repo: repo, location: location, logger: logger, now: time.Now}
+// NewFinYearUsecase builds financial-year setup; location decides what "today" is and
+// futureYears how many years after the current one may be created (FY_FUTURE_YEARS).
+func NewFinYearUsecase(repo domain_finyear.Repository, location *time.Location, futureYears int, logger *slog.Logger) domain_finyear.Usecase {
+	return &finYearUsecase{repo: repo, location: location, futureYears: futureYears, logger: logger, now: time.Now}
 }
 
-// allowedStartYears returns the start years of the current and previous financial year.
-func (uc *finYearUsecase) allowedStartYears() (current, previous int) {
+// allowedStartYears returns today's start year and the range that may be created:
+// the previous year through futureYears after the current one.
+func (uc *finYearUsecase) allowedStartYears() (current, first, last int) {
 	current = domain_finyear.StartYearFor(uc.now().In(uc.location))
-	return current, current - 1
+	return current, current - 1, current + uc.futureYears
 }
 
 func (uc *finYearUsecase) Options(ctx context.Context) ([]domain_finyear.Option, error) {
@@ -41,19 +44,27 @@ func (uc *finYearUsecase) Options(ctx context.Context) ([]domain_finyear.Option,
 	for _, fy := range existing {
 		have[fy.FinYr] = true
 	}
-	current, previous := uc.allowedStartYears()
-	option := func(startYear int, kind string) domain_finyear.Option {
+	current, first, last := uc.allowedStartYears()
+	options := make([]domain_finyear.Option, 0, last-first+1)
+	for startYear := first; startYear <= last; startYear++ {
+		kind := domain_finyear.KindFuture
+		switch {
+		case startYear < current:
+			kind = domain_finyear.KindPrevious
+		case startYear == current:
+			kind = domain_finyear.KindCurrent
+		}
 		st, end := domain_finyear.StandardDates(startYear)
 		label := domain_finyear.FinYrLabel(startYear)
-		return domain_finyear.Option{
+		options = append(options, domain_finyear.Option{
 			FinYr:     label,
 			StartDate: st.Format(domain_finyear.DateLayout),
 			EndDate:   end.Format(domain_finyear.DateLayout),
 			Kind:      kind,
 			Exists:    have[label],
-		}
+		})
 	}
-	return []domain_finyear.Option{option(current, "current"), option(previous, "previous")}, nil
+	return options, nil
 }
 
 func (uc *finYearUsecase) Validate(ctx context.Context, in domain_finyear.FinancialYearInput) (*domain_finyear.FinancialYear, error) {
@@ -150,12 +161,12 @@ func (uc *finYearUsecase) prepare(in domain_finyear.FinancialYearInput) (*domain
 			Field: "finyr", Message: "must look like 2026-2027 (two consecutive years)",
 		})
 	}
-	current, previous := uc.allowedStartYears()
-	if startYear != current && startYear != previous {
+	current, first, last := uc.allowedStartYears()
+	if startYear < first || startYear > last {
 		return nil, nil, domain.Validation(domain.FieldError{
 			Field: "finyr",
-			Message: "must be the current (" + domain_finyear.FinYrLabel(current) +
-				") or previous (" + domain_finyear.FinYrLabel(previous) + ") financial year",
+			Message: "must be between " + domain_finyear.FinYrLabel(first) +
+				" and " + domain_finyear.FinYrLabel(last),
 		})
 	}
 
