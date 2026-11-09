@@ -222,7 +222,7 @@ that don't match the dates, and 18-month ranges.
 | Rule | Source |
 |---|---|
 | `finyr` is `YYYY-YYYY` with consecutive years | walkthrough ("9 characters, start year – end year") |
-| The previous year, the current one, or up to `FY_FUTURE_YEARS` (default 1, 0–5) after it, by today in `DEFAULT_TIMEZONE` | walkthrough v1.01 (in 2026-2027, 2027-2028 may be created) |
+| The previous year, the current one, or up to `FY_FUTURE_YEARS` (default 0, 0–5) after it, by today in `DEFAULT_TIMEZONE` | Uncle, 9 Nov: a year only once today falls in it (the v1.01 walkthrough had allowed 2027-2028 in 2026-2027) |
 | Dates are 1 April → 31 March; sent dates must match | walkthrough ("1st April to 31st March of next year") |
 | Which year is current: while none is, the new one; else an explicit `finyr_is_current`; else today's year | decided inside the locked transaction, so creating the previous year first cannot leave it current (no procedure changes it later). A future year is current only when asked |
 | Not a duplicate, no overlap | DBA function (re-run in a locked transaction) |
@@ -333,7 +333,7 @@ only place that maps them to HTTP.
    dates or the 9-character limit — we enforce them in the API.
 6. Confirm the 1 April rule for `fin_st_dt` and which company fields are mandatory.
 7. Done 9 Nov: Uncle installed the fixed `mst_trust_validate` (`finyr_master` + `::VARCHAR`) and `mst_trust_insert` on live. Worth one read-only check: `SELECT pg_get_functiondef('pms.mst_trust_validate'::regproc);`
-8. How many future financial years may be created (built: `FY_FUTURE_YEARS`, default 1).
+8. Done 9 Nov: no future financial years (Uncle: "only if current date falls"). `FY_FUTURE_YEARS` defaults to 0 and can be raised without a code change.
 9. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; it is stored as plain text, so encrypt it in the app before mail sending is built.
 10. PAN/GSTIN numbers are optional even when enabled, validated when keyed (Uncle, 9 Nov). Still open: is the enabled date the registration date, and may it be in the future? (built: not after today).
 11. Must a trust's `wrk_st_date` fall inside its `wrk_st_finyr`? (built: inside).

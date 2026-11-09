@@ -137,9 +137,9 @@ sequenceDiagram
 ```
 
 "Today" is taken in `DEFAULT_TIMEZONE` (Asia/Kolkata). On 02-11-2026 the choices
-are 2025-2026, 2026-2027 and, with the default `FY_FUTURE_YEARS=1`, 2027-2028.
-Years can be created at any time, not only during setup; a future year is not
-current unless `finyr_is_current: true` is sent.
+are 2025-2026 and 2026-2027 (the default `FY_FUTURE_YEARS=0`; with 1, also 2027-2028).
+Years can be created at any time, not only during setup; a future year, when
+allowed, is not current unless `finyr_is_current: true` is sent.
 
 DBA messages are mapped to fields: *already exists* and *overlap* → `409` on
 `finyr`; missing dates / end before start → `422` on the date fields.

@@ -174,8 +174,10 @@ or not a refresh token.
 
 ### `GET /api/v1/financial-years/options`
 
-The previous year, the current one, then `FY_FUTURE_YEARS` future years (default 1), oldest first.
-`kind` is `previous`, `current` or `future`.
+The previous year, the current one, then `FY_FUTURE_YEARS` future years, oldest first.
+`kind` is `previous`, `current` or `future`. The default is 0 future years (Uncle, 9 Nov:
+a year may be created only once today falls in it), so live returns only the first two rows
+below; the `future` row appears only when `FY_FUTURE_YEARS` is raised.
 
 ```json
 { "data": [

@@ -28,7 +28,8 @@ type Config struct {
 	DefaultTimeZone string `env:"DEFAULT_TIMEZONE" envDefault:"Asia/Kolkata"`
 
 	// FYFutureYears is how many financial years after the current one may be created (0-5).
-	FYFutureYears int `env:"FY_FUTURE_YEARS" envDefault:"1"`
+	// 0 by default: Uncle (9 Nov) allows a year only once today falls in it.
+	FYFutureYears int `env:"FY_FUTURE_YEARS" envDefault:"0"`
 
 	// Access and refresh tokens use different secrets so one can never stand in for the other.
 	JWTAccessSecret  string        `env:"JWT_ACCESS_SECRET,required"`

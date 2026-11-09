@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -46,4 +47,10 @@ func TestCheckRanges(t *testing.T) {
 		breakIt(&c)
 		assert.ErrorContains(t, c.checkRanges(), name)
 	}
+}
+
+// Uncle (9 Nov): a financial year may be created only once today falls in it, so none in the future by default.
+func TestNoFutureYearsByDefault(t *testing.T) {
+	f, _ := reflect.TypeOf(Config{}).FieldByName("FYFutureYears")
+	assert.Equal(t, "0", f.Tag.Get("envDefault"))
 }
