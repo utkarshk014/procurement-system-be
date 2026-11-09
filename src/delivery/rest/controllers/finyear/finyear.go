@@ -34,7 +34,7 @@ type validateResponse struct {
 	FinancialYear *domain_finyear.FinancialYear `json:"financial_year"`
 }
 
-// Options lists the years the setup form may offer (current and previous).
+// Options lists the years that may be created: previous, current, then future years, oldest first.
 func (fc *finYearController) Options(w http.ResponseWriter, r *http.Request) error {
 	opts, err := fc.usecases.FinancialYear.Options(r.Context())
 	if err != nil {
