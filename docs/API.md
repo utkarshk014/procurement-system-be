@@ -55,6 +55,7 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | GET | `/api/v1/financial-years/current` | tenant_admin | The current year (404 if none) |
 | POST | `/api/v1/financial-years/validate` | tenant_admin | Dry-run a create |
 | POST | `/api/v1/financial-years` | tenant_admin | Create a financial year |
+| PUT | `/api/v1/financial-years/current` | tenant_admin | Make another existing year the current one |
 | GET | `/api/v1/company` | tenant_admin | The company (404 before first save) |
 | POST | `/api/v1/company/validate` | tenant_admin | Dry-run a save |
 | PUT | `/api/v1/company` | tenant_admin | Create (201) or update (200) the single company |
@@ -203,6 +204,18 @@ Create: `201` the year · Validate: `200 { "valid": true, "financial_year": {…
 ### `GET /api/v1/financial-years` · `GET /api/v1/financial-years/current`
 
 `200` list (newest first) / the current year · `404` when there is no current year.
+
+### `PUT /api/v1/financial-years/current`
+
+```json
+{ "finyr": "2027-2028" }
+```
+
+`200` the year, now current; every other year is un-marked, so exactly one is current.
+Already current → `200`, nothing changes. `422` on `finyr` when it is missing, not
+`YYYY-YYYY` (*must look like 2026-2027 (two consecutive years)*) or not an existing year
+(*must be an existing financial year*). Only `finyr` is accepted. There is no delete and
+no date edit: the label fixes the dates.
 
 ---
 

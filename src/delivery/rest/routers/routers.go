@@ -71,6 +71,7 @@ func SetFinYearRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controlle
 		r.Get("/", rest_utils.Wrap(logger, c.List))
 		r.Get("/options", rest_utils.Wrap(logger, c.Options))
 		r.Get("/current", rest_utils.Wrap(logger, c.Current))
+		r.Put("/current", rest_utils.Wrap(logger, c.SetCurrent))
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
 		r.Post("/", rest_utils.Wrap(logger, c.Create))
 	})

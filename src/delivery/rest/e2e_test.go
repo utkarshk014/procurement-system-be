@@ -297,6 +297,43 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, true, opts[2].(map[string]any)["exists"])
 	})
 
+	t.Run("make another year current through the DBA procedure", func(t *testing.T) {
+		res := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": prevFY})
+		require.Equal(t, 200, res.status, res.body)
+		assert.Equal(t, prevFY, res.data()["finyr"])
+		assert.Equal(t, true, res.data()["finyr_is_current"])
+
+		var current string
+		require.NoError(t, dbm.Control().QueryRow(ctx,
+			`SELECT string_agg(finyr, ',') FROM pms.finyr_master WHERE finyr_is_current`).Scan(&current))
+		assert.Equal(t, prevFY, current, "exactly one current year")
+		assert.Equal(t, prevFY, api.do("GET", "/api/v1/setup/status", esis, nil).data()["current_financial_year"])
+
+		same := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": prevFY})
+		assert.Equal(t, 200, same.status, "already current: 200, no change")
+
+		missing := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": "1999-2000"})
+		assert.Equal(t, 422, missing.status)
+		assert.Equal(t, "must be an existing financial year", missing.fieldErrors()["finyr"])
+		bad := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": "abc"})
+		assert.Equal(t, 422, bad.status)
+		assert.Contains(t, bad.fieldErrors(), "finyr")
+		extra := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": curFY, "finyr_is_current": true})
+		assert.Equal(t, 422, extra.status, "only finyr is accepted")
+
+		back := api.do("PUT", "/api/v1/financial-years/current", esis, map[string]any{"finyr": curFY})
+		require.Equal(t, 200, back.status, back.body)
+		list := api.do("GET", "/api/v1/financial-years/", esis, nil).list()
+		n := 0
+		for _, y := range list {
+			if y.(map[string]any)["finyr_is_current"] == true {
+				n++
+			}
+		}
+		assert.Equal(t, 1, n, "the list shows exactly one current year")
+		assert.Equal(t, curFY, api.do("GET", "/api/v1/financial-years/current", esis, nil).data()["finyr"])
+	})
+
 	t.Run("company validate reports every problem at once", func(t *testing.T) {
 		bad := map[string]any{"name": "", "pin": "5600", "mobile": "123", "email": "x@", "fin_st_dt": "2026-08-15"}
 		res := api.do("POST", "/api/v1/company/validate", esis, bad)

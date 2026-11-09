@@ -174,7 +174,8 @@ There is no public sign-up. The first platform admin is created with the CLI.
 |---|---|---|---|
 | `pms.finyr_master` | DBA (`gensuperuser`) | Financial years (PK `finyr`, check end ≥ start) | Read with `SELECT`; written only through the procedure |
 | `pms.finyr_master_validate(...)` | DBA | Returns `'SUCCESS'` or a message | Called on validate, and again inside the create transaction |
-| `pms.mst_finyr_insert(...)` | DBA | Insert; `is_current = true` un-marks the others; RAISEs on duplicates | Called for create. No update procedure exists |
+| `pms.mst_finyr_insert(...)` | DBA | Insert; `is_current = true` un-marks the others; RAISEs on duplicates | Called for create |
+| `pms.mst_finyr_set_current(take_finyr)` | DBA (written by us at Uncle's request, installed by him on live 9 Nov) | Marks one existing year current and un-marks the rest; RAISEs if missing | Called by `PUT /financial-years/current` |
 | `pms.company_master` | DBA (`gensuperuser`) | Company details, one row `sl = 1` | Read with `SELECT`; written only through the procedure |
 | `pms.company_master_validate(...)` | DBA | Returns `(is_valid, message)` | Called on validate, and again inside the save transaction |
 | `pms.company_master_insert(...)` | DBA | Upsert by `sl` | Called for every save with `sl = 1`. It does **not** validate, so we always validate first |
@@ -202,6 +203,9 @@ Uncle installed on live on 9 Nov: the bundle version with `pms.mst_fin_year` →
 Postgres 11 raises 42804 *structure of query does not match function result type*
 on every call).
 
+`mst_finyr_set_current` at the end of the file is the text Uncle installed on live
+on 9 Nov (we wrote it at his request).
+
 ## 6. Setup wizard
 
 The walkthrough's wizard, in order. `GET /setup/status` returns `next_step`.
@@ -222,6 +226,7 @@ that don't match the dates, and 18-month ranges.
 | Dates are 1 April → 31 March; sent dates must match | walkthrough ("1st April to 31st March of next year") |
 | Which year is current: while none is, the new one; else an explicit `finyr_is_current`; else today's year | decided inside the locked transaction, so creating the previous year first cannot leave it current (no procedure changes it later). A future year is current only when asked |
 | Not a duplicate, no overlap | DBA function (re-run in a locked transaction) |
+| Change the current year later | `PUT /financial-years/current`: under the same advisory lock as create, check the year exists, then `CALL pms.mst_finyr_set_current`; already current is a no-op |
 
 ## 7. Company rules
 
@@ -323,15 +328,13 @@ only place that maps them to HTTP.
 2. `company_master.time_zone` is `TIMESTAMPTZ`, so the zone name is lost;
    `VARCHAR` holding `Asia/Kolkata` would keep it.
 3. A `rec_updated_at` column on `company_master`.
-4. No procedure to change which financial year is current (or edit one) after creation.
+4. Done 9 Nov: `pms.mst_finyr_set_current(take_finyr)` is installed on live. There is still no way to edit or delete a year.
 5. `finyr_master_validate` does not check the `YYYY-YYYY` format, the 1 April–31 March
    dates or the 9-character limit — we enforce them in the API.
 6. Confirm the 1 April rule for `fin_st_dt` and which company fields are mandatory.
 7. Done 9 Nov: Uncle installed the fixed `mst_trust_validate` (`finyr_master` + `::VARCHAR`) and `mst_trust_insert` on live. Worth one read-only check: `SELECT pg_get_functiondef('pms.mst_trust_validate'::regproc);`
-8. Trust delete / code change (Uncle: allowed while the trust has no transactions) needs DBA procedures and Utkarsh's OK on the contract.
-9. A procedure to change the current financial year, e.g. `pms.mst_finyr_set_current(take_finyr)` (blocks `PUT /financial-years/current`).
-10. How many future financial years may be created (built: `FY_FUTURE_YEARS`, default 1).
-11. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; it is stored as plain text, so encrypt it in the app before mail sending is built.
-12. PAN/GSTIN numbers are optional even when enabled, validated when keyed (Uncle, 9 Nov). Still open: is the enabled date the registration date, and may it be in the future? (built: not after today).
-13. Must a trust's `wrk_st_date` fall inside its `wrk_st_finyr`? (built: inside).
-14. Trust delete and edits (Uncle, 9 Nov): a trust may be deleted only while it has no transactions, and cannot be altered once transactions exist. There are no transaction tables yet, so neither is enforced; a delete needs a DBA procedure that checks for transactions (we have no `DELETE` right on `mst_trust`).
+8. How many future financial years may be created (built: `FY_FUTURE_YEARS`, default 1).
+9. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; it is stored as plain text, so encrypt it in the app before mail sending is built.
+10. PAN/GSTIN numbers are optional even when enabled, validated when keyed (Uncle, 9 Nov). Still open: is the enabled date the registration date, and may it be in the future? (built: not after today).
+11. Must a trust's `wrk_st_date` fall inside its `wrk_st_finyr`? (built: inside).
+12. Trust delete and edits (Uncle, 9 Nov): a trust may be deleted only while it has no transactions, and cannot be altered once transactions exist. There are no transaction tables yet, so neither is enforced; a delete needs a DBA procedure that checks for transactions (we have no `DELETE` right on `mst_trust`).
