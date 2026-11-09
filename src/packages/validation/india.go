@@ -16,6 +16,7 @@ var (
 )
 
 // NormalizeIndianMobile keeps digits and drops a +91/91/0 prefix: "+91 98765-43210" -> "9876543210".
+// Input with no digits at all is returned trimmed, so "abc" fails the mobile check instead of saving as empty.
 func NormalizeIndianMobile(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -25,6 +26,8 @@ func NormalizeIndianMobile(s string) string {
 	}
 	digits := b.String()
 	switch {
+	case digits == "":
+		return strings.TrimSpace(s)
 	case len(digits) == 12 && strings.HasPrefix(digits, "91"):
 		return digits[2:]
 	case len(digits) == 11 && strings.HasPrefix(digits, "0"):

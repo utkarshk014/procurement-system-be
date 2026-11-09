@@ -14,6 +14,7 @@ func validConfig() Config {
 		AccessTokenTTL:  15 * time.Minute,
 		RefreshTokenTTL: 720 * time.Hour,
 		LoginRateLimit:  10,
+		FYFutureYears:   1,
 		TrustedProxies:  []string{"10.0.0.0/8", "::1/128"},
 	}
 }
@@ -31,7 +32,15 @@ func TestCheckRanges(t *testing.T) {
 		"REFRESH_TOKEN_TTL":           func(c *Config) { c.RefreshTokenTTL = c.AccessTokenTTL },
 		"LOGIN_RATE_LIMIT_PER_MINUTE": func(c *Config) { c.LoginRateLimit = 0 },
 		"TRUSTED_PROXIES":             func(c *Config) { c.TrustedProxies = []string{"10.0.0.1"} },
+		"FY_FUTURE_YEARS":             func(c *Config) { c.FYFutureYears = 6 },
 	}
+	negative := validConfig()
+	negative.FYFutureYears = -1
+	assert.ErrorContains(t, negative.checkRanges(), "FY_FUTURE_YEARS")
+	zero := validConfig()
+	zero.FYFutureYears = 0
+	assert.NoError(t, zero.checkRanges(), "0 future years is allowed")
+
 	for name, breakIt := range cases {
 		c := validConfig()
 		breakIt(&c)
