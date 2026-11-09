@@ -5,11 +5,13 @@ import (
 	domain_auth "github.com/utkarshk014/procurement-system-be/src/internal/domain/auth"
 	domain_company "github.com/utkarshk014/procurement-system-be/src/internal/domain/company"
 	domain_finyear "github.com/utkarshk014/procurement-system-be/src/internal/domain/finyear"
+	domain_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/domain/taxdetails"
 	domain_tenant "github.com/utkarshk014/procurement-system-be/src/internal/domain/tenant"
 	domain_trust "github.com/utkarshk014/procurement-system-be/src/internal/domain/trust"
 	repository_auth "github.com/utkarshk014/procurement-system-be/src/internal/repository/auth"
 	repository_company "github.com/utkarshk014/procurement-system-be/src/internal/repository/company"
 	repository_finyear "github.com/utkarshk014/procurement-system-be/src/internal/repository/finyear"
+	repository_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/repository/taxdetails"
 	repository_tenant "github.com/utkarshk014/procurement-system-be/src/internal/repository/tenant"
 	repository_trust "github.com/utkarshk014/procurement-system-be/src/internal/repository/trust"
 	"github.com/utkarshk014/procurement-system-be/src/packages/database"
@@ -22,6 +24,7 @@ type Repositories struct {
 	FinancialYear domain_finyear.Repository
 	Company       domain_company.Repository
 	Trust         domain_trust.Repository
+	TaxDetails    domain_taxdetails.Repository
 }
 
 // NewRepositories puts platform data in the control DB and business data in each tenant's DB.
@@ -32,5 +35,6 @@ func NewRepositories(dbm *database.Manager) *Repositories {
 		FinancialYear: repository_finyear.NewPostgresFinYearRepository(dbm),
 		Company:       repository_company.NewPostgresCompanyRepository(dbm),
 		Trust:         repository_trust.NewPostgresTrustRepository(dbm),
+		TaxDetails:    repository_taxdetails.NewPostgresTaxDetailsRepository(dbm),
 	}
 }

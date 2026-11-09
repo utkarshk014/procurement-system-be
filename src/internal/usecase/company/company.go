@@ -90,10 +90,21 @@ func (uc *companyUsecase) prepare(ctx context.Context, in domain_company.Company
 	}
 
 	in = Normalize(in)
-	if in.FinStartDate == "" {
+	sentFinStart := in.FinStartDate != ""
+	if !sentFinStart {
 		in.FinStartDate = current.StartDate
 	}
-	if fields := Check(in); len(fields) > 0 {
+	fields := Check(in)
+	if sentFinStart && !hasField(fields, "fin_st_dt") {
+		ok, err := uc.isFinancialYearStart(ctx, in.FinStartDate)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			fields = append(fields, domain.FieldError{Field: "fin_st_dt", Message: "must be the start of an existing financial year"})
+		}
+	}
+	if len(fields) > 0 {
 		return nil, domain.Validation(fields...)
 	}
 	return &domain_company.Company{
@@ -112,6 +123,29 @@ func (uc *companyUsecase) prepare(ctx context.Context, in domain_company.Company
 		ShortName:    in.ShortName,
 		FinStartDate: in.FinStartDate,
 	}, nil
+}
+
+// isFinancialYearStart reports whether date is the finyr_st_date of a year in pms.finyr_master.
+func (uc *companyUsecase) isFinancialYearStart(ctx context.Context, date string) (bool, error) {
+	years, err := uc.finYears.List(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, fy := range years {
+		if fy.StartDate == date {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func hasField(fields []domain.FieldError, name string) bool {
+	for _, f := range fields {
+		if f.Field == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Normalize trims fields and stores mobile as 10 digits, email lowercase, country India by default, states in official spelling.

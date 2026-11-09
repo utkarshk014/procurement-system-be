@@ -17,6 +17,7 @@ import (
 	controllers_finyear "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/finyear"
 	controllers_meta "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/meta"
 	controllers_setup "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/setup"
+	controllers_taxdetails "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/taxdetails"
 	controllers_trust "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/trust"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/middlewares"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/routers"
@@ -57,7 +58,8 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 	routers.SetAdminRoutes(r, auth, controllers_admin.NewAdminController(usecases, logger), logger)
 	routers.SetSetupRoutes(r, auth, controllers_setup.NewSetupController(usecases, logger), logger)
 	routers.SetFinYearRoutes(r, auth, controllers_finyear.NewFinYearController(usecases, logger), logger)
-	routers.SetCompanyRoutes(r, auth, controllers_company.NewCompanyController(usecases, logger), logger)
+	routers.SetCompanyRoutes(r, auth, controllers_company.NewCompanyController(usecases, logger),
+		controllers_taxdetails.NewTaxDetailsController(usecases, logger), logger)
 	routers.SetTrustRoutes(r, auth, controllers_trust.NewTrustController(usecases, logger), logger)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
