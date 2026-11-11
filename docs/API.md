@@ -56,6 +56,7 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | POST | `/api/v1/financial-years/validate` | tenant_admin | Dry-run a create |
 | POST | `/api/v1/financial-years` | tenant_admin | Create a financial year |
 | PUT | `/api/v1/financial-years/current` | tenant_admin | Make another existing year the current one |
+| DELETE | `/api/v1/financial-years/{finyr}` | tenant_admin | Delete a year that is not current and unused (204) |
 | GET | `/api/v1/company` | tenant_admin | The company (404 before first save) |
 | POST | `/api/v1/company/validate` | tenant_admin | Dry-run a save |
 | PUT | `/api/v1/company` | tenant_admin | Create (201) or update (200) the single company |
@@ -67,10 +68,12 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | POST | `/api/v1/trusts/validate` | tenant_admin | Dry-run a create |
 | POST | `/api/v1/trusts` | tenant_admin | Create a trust (201) |
 | PUT | `/api/v1/trusts/{code}` | tenant_admin | Update a trust (200); the code never changes |
+| DELETE | `/api/v1/trusts/{code}` | tenant_admin | Delete a trust no institution uses (204) |
 | GET | `/api/v1/places` · `/branches` · `/regions` | tenant_admin | One code list, sorted by name (`[]` when none) |
 | GET | `/api/v1/places/{code}` (and the other two) | tenant_admin | One row (404 if unknown) |
 | POST | `/api/v1/places/validate` (and the other two) | tenant_admin | Dry-run a create |
 | POST | `/api/v1/places` (and the other two) | tenant_admin | Add a row (201) |
+| DELETE | `/api/v1/places/{code}` (and the other two) | tenant_admin | Delete a row no institution uses (204) |
 | GET | `/api/v1/institutions` | tenant_admin | One page of institutions, filtered, sorted by full code |
 | GET | `/api/v1/institutions/{code}` | tenant_admin | One institution by ACM code (404 if unknown) |
 | GET | `/api/v1/institutions/next-code` | tenant_admin | Suggested next ACM and reg codes |
@@ -225,8 +228,15 @@ Create: `201` the year · Validate: `200 { "valid": true, "financial_year": {…
 `200` the year, now current; every other year is un-marked, so exactly one is current.
 Already current → `200`, nothing changes. `422` on `finyr` when it is missing, not
 `YYYY-YYYY` (*must look like 2026-2027 (two consecutive years)*) or not an existing year
-(*must be an existing financial year*). Only `finyr` is accepted. There is no delete and
-no date edit: the label fixes the dates.
+(*must be an existing financial year*). Only `finyr` is accepted. There is no date edit:
+the label fixes the dates.
+
+### `DELETE /api/v1/financial-years/{finyr}`
+
+`204` when deleted. `409` for the current year (*The current financial year cannot be
+deleted. Make another year current first.*) and for a year the DBA's
+`finyr_master_validate_delete` refuses, with his message, e.g. *Cannot delete! Financial
+year is already used in Trust Master (mst_trust)*. `404` for an unknown year.
 
 ---
 
@@ -345,9 +355,12 @@ Example messages: `pan`: *must be a PAN like ABCDE1234F* ·
 ## Trusts (tenant_admin, Form 4)
 
 A company has several trusts (ESIS: ACO, KHE, SAH, SAM, SAT). `trust_code` is the key
-and never changes. `{code}` in the path is upper-cased before lookup. There is no delete
-yet: Uncle allows deleting a trust only while it has no transactions, which needs a DBA
-procedure (not written yet).
+and never changes. `{code}` in the path is upper-cased before lookup.
+
+`DELETE /trusts/{code}`: `204` when deleted; `409` with the DBA's message while an
+institution uses the trust (*Cannot delete! Trust code is already used in Institution
+Master (mst_inst)*); `404` when unknown. Uncle allows a delete only while the trust has no
+transactions; there are no transaction tables yet, so his check covers institutions only.
 
 ### Trust object
 
@@ -390,8 +403,9 @@ is mapped to a field (`Trust code…` → `trust_code`, `Trust description…` �
 
 Three small lists an institution points into. They share one shape and one set of
 rules; only the path and the DBA objects differ (`pms.mst_place` / `mst_branch` /
-`mst_region`, each with an insert procedure and a validate function). There is **no
-edit or delete**: the DBA has given only insert procedures (open items).
+`mst_region`, each with insert and delete procedures and validate functions). There is
+**no edit**: the DBA has given no update procedure (open items). A row can be deleted
+while no institution uses it.
 
 ### Object and body
 
@@ -416,6 +430,7 @@ then one locked transaction re-checks and calls his insert procedure.
 | `GET /places/{code}` | `200` the row | `404` |
 | `POST /places/validate` | `200 { "valid": true, "entry": {…} }` | `409` · `422` |
 | `POST /places` | `201` the row | `409` · `422` |
+| `DELETE /places/{code}` | `204` | `404` · `409` with the DBA's message while an institution uses it |
 
 ---
 
@@ -428,7 +443,7 @@ by the server as `inst_code:inst_reg_code` (`SAT-001:MYS-01`, 14 characters, as 
 old system's "ACM Code (14 Char.)"). This follows all 571 rows of the client's sheet.
 Uncle's table says `inst_code` is 9 characters; with 9 no 14-character full code can be
 formed, so **creating an institution on live fails until he changes it to 7** (open items).
-There is no edit or delete yet (no DBA procedure).
+There is no edit or delete yet (no DBA procedure for either).
 
 ### Institution object
 

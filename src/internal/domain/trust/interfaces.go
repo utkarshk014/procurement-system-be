@@ -13,6 +13,8 @@ type Usecase interface {
 	Create(ctx context.Context, in CreateInput) (*Trust, error)
 	// Update changes the description and working start of an existing trust; the code never changes.
 	Update(ctx context.Context, code string, in UpdateInput) (*Trust, error)
+	// Delete removes a trust no institution uses yet (the DBA's check decides), or returns ErrNotFound / a 409.
+	Delete(ctx context.Context, code string) error
 }
 
 // Repository talks to pms.mst_trust and the DBA's validate function and insert procedure.
@@ -28,4 +30,6 @@ type Repository interface {
 	Create(ctx context.Context, t *Trust) error
 	// Update checks the trust exists and the description is free, re-runs the DBA check and saves, under one lock.
 	Update(ctx context.Context, t *Trust) error
+	// Delete runs the DBA's delete check and procedure under the trust lock.
+	Delete(ctx context.Context, code string) error
 }

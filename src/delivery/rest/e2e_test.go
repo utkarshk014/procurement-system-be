@@ -852,6 +852,56 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, []int{201, 409, 409, 409}, statuses)
 	})
 
+	t.Run("deletes go through the DBA's checks: in use is a 409, free is a 204", func(t *testing.T) {
+		del := func(path string) response { return api.do("DELETE", path, esis, nil) }
+		inUse := func(path, message string) {
+			t.Helper()
+			res := del(path)
+			assert.Equal(t, 409, res.status, "%s: %s", path, res.body)
+			assert.Equal(t, message, res.errMessage(), path)
+		}
+		gone := func(path, getPath string) {
+			t.Helper()
+			res := del(path)
+			require.Equal(t, 204, res.status, "%s: %s", path, res.body)
+			assert.Equal(t, 404, api.do("GET", getPath, esis, nil).status, "%s is gone", getPath)
+			assert.Equal(t, 404, del(path).status, "deleting again is a 404")
+		}
+
+		assert.Equal(t, 403, api.do("DELETE", "/api/v1/places/RAC", root, nil).status, "platform admin cannot delete")
+		assert.Equal(t, 401, api.do("DELETE", "/api/v1/places/RAC", "", nil).status)
+
+		// Used by institutions SAT-001:MYS-01 and ACU-001:BGN-01.
+		inUse("/api/v1/places/mys", "Cannot delete! Place code is already used in Institution Master (mst_inst)")
+		inUse("/api/v1/branches/MYS", "Cannot delete! Branch code is already used in Institution Master (mst_inst)")
+		inUse("/api/v1/regions/MYS", "Cannot delete! Region code is already used in Institution Master (mst_inst)")
+		inUse("/api/v1/trusts/SAT", "Cannot delete! Trust code is already used in Institution Master (mst_inst)")
+		for _, l := range []string{"places", "branches", "regions"} {
+			gone("/api/v1/"+l+"/rac", "/api/v1/"+l+"/RAC")
+		}
+		assert.Equal(t, 404, del("/api/v1/places/M1S").status, "a bad code never reaches the DB")
+		gone("/api/v1/trusts/khe", "/api/v1/trusts/KHE")
+
+		inUse("/api/v1/financial-years/"+curFY, "The current financial year cannot be deleted. Make another year current first.")
+		inUse("/api/v1/financial-years/"+prevFY, "Cannot delete! Financial year is already used in Trust Master (mst_trust)")
+		res := del("/api/v1/financial-years/" + nextFY)
+		require.Equal(t, 204, res.status, res.body)
+		assert.Len(t, api.do("GET", "/api/v1/financial-years/", esis, nil).list(), 2)
+		assert.Equal(t, 404, del("/api/v1/financial-years/"+nextFY).status)
+		assert.Equal(t, 404, del("/api/v1/financial-years/garbage").status)
+
+		var places int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_place WHERE place_code IN ('MYS','RAC')`).Scan(&places))
+		assert.Equal(t, 1, places, "MYS kept, RAC deleted")
+	})
+
+	t.Run("a delete and a create of the same trust cannot interleave", func(t *testing.T) {
+		require.Equal(t, 201, api.do("POST", "/api/v1/trusts/", esis, map[string]any{
+			"trust_code": "DLT", "trust_desc": "Delete race trust", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate}).status)
+		statuses := concurrently(6, func(i int) int { return api.do("DELETE", "/api/v1/trusts/DLT", esis, nil).status })
+		assert.Equal(t, []int{204, 404, 404, 404, 404, 404}, statuses)
+	})
+
 	t.Run("second tenant on its own database is isolated, and its first saves are race-free", func(t *testing.T) {
 		res := api.do("POST", "/api/v1/admin/tenants", root, map[string]any{"code": "TB", "name": "Tenant B", "db_key": "esis_b"})
 		require.Equal(t, 201, res.status, res.body)
@@ -1125,6 +1175,7 @@ func legacyScripts() []string {
 		filepath.Join(dir, "001_pms_objects.sql"),
 		filepath.Join(dir, "002_form5_objects.sql"),
 		filepath.Join(dir, "003_local_fixes.sql"),
+		filepath.Join(dir, "004_delete_objects.sql"),
 	}
 }
 

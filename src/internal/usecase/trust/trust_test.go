@@ -228,3 +228,21 @@ func TestTrustsNeedTenantAccount(t *testing.T) {
 	_, err := newUC(newRepo()).List(context.Background())
 	assert.True(t, domain.IsKind(err, domain.KindUnauthorized))
 }
+
+func (f *fakeRepo) Delete(_ context.Context, code string) error {
+	if _, ok := f.trusts[code]; !ok {
+		return domain_trust.ErrNotFound
+	}
+	delete(f.trusts, code)
+	return nil
+}
+
+func TestDeleteNormalisesTheCode(t *testing.T) {
+	repo := newRepo()
+	_, err := newUC(repo).Create(tenantCtx(), sat())
+	require.NoError(t, err)
+	require.NoError(t, newUC(repo).Delete(tenantCtx(), " sat "))
+	assert.Empty(t, repo.trusts)
+	assert.True(t, domain.IsKind(newUC(repo).Delete(tenantCtx(), "SAT"), domain.KindNotFound))
+	assert.True(t, domain.IsKind(newUC(repo).Delete(tenantCtx(), "S4T"), domain.KindNotFound), "bad shape never reaches the DB")
+}

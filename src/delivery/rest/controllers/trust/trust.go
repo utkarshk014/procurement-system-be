@@ -17,6 +17,7 @@ type TrustController interface {
 	Validate(w http.ResponseWriter, r *http.Request) error
 	Create(w http.ResponseWriter, r *http.Request) error
 	Update(w http.ResponseWriter, r *http.Request) error
+	Delete(w http.ResponseWriter, r *http.Request) error
 }
 
 type trustController struct {
@@ -94,5 +95,14 @@ func (tc *trustController) Update(w http.ResponseWriter, r *http.Request) error 
 		return err
 	}
 	rest_utils.Respond(w, http.StatusOK, t)
+	return nil
+}
+
+// Delete removes a trust that no institution uses yet (204).
+func (tc *trustController) Delete(w http.ResponseWriter, r *http.Request) error {
+	if err := tc.usecases.Trust.Delete(r.Context(), chi.URLParam(r, "code")); err != nil {
+		return err
+	}
+	rest_utils.NoContent(w)
 	return nil
 }

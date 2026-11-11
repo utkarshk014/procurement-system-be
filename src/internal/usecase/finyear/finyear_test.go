@@ -324,3 +324,28 @@ func TestSetCurrentProcedureMessagesMapToFinyr(t *testing.T) {
 	assert.True(t, domain.IsKind(err, domain.KindValidation))
 	assert.Equal(t, "Financial year 2030-2031 does not exist", fields(err)["finyr"])
 }
+
+func (f *fakeRepo) Delete(_ context.Context, finYr string) error {
+	for i := range f.years {
+		if f.years[i].FinYr == finYr {
+			if f.years[i].IsCurrent {
+				return domain_finyear.ErrDeleteCurrent
+			}
+			f.years = append(f.years[:i], f.years[i+1:]...)
+			return nil
+		}
+	}
+	return domain.NotFound("Financial year not found")
+}
+
+func TestDeleteRemovesAYearButNeverTheCurrentOne(t *testing.T) {
+	repo := &fakeRepo{years: []domain_finyear.FinancialYear{
+		{FinYr: "2025-2026"}, {FinYr: "2026-2027", IsCurrent: true},
+	}}
+	uc := newAt(repo, 2026, time.November, 2)
+	require.NoError(t, uc.Delete(ctx(), " 2025-2026 "))
+	assert.Len(t, repo.years, 1)
+	assert.True(t, domain.IsKind(uc.Delete(ctx(), "2026-2027"), domain.KindConflict), "the current year")
+	assert.True(t, domain.IsKind(uc.Delete(ctx(), "garbage"), domain.KindNotFound))
+	assert.True(t, domain.IsKind(uc.Delete(ctx(), "1999-2000"), domain.KindNotFound))
+}

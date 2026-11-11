@@ -100,3 +100,19 @@ func Prepare(in domain_codelist.Input) (*domain_codelist.Entry, error) {
 	}
 	return &domain_codelist.Entry{Code: in.Code, Name: in.Name}, nil
 }
+
+func (uc *codeListUsecase) Delete(ctx context.Context, code string) error {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return err
+	}
+	code = domain_codelist.NormalizeCode(code)
+	if !domain_codelist.CodeRe.MatchString(code) {
+		return uc.kind.NotFound()
+	}
+	if err := uc.repo.Delete(ctx, code); err != nil {
+		return err
+	}
+	uc.logger.InfoContext(ctx, strings.ToLower(uc.kind.Label)+" deleted", "tenant", p.TenantCode, "user_id", p.UserID, "code", code)
+	return nil
+}

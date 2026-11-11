@@ -13,6 +13,8 @@ type Usecase interface {
 	Current(ctx context.Context) (*FinancialYear, error)
 	// SetCurrent makes an existing year the only current one; already current is a no-op.
 	SetCurrent(ctx context.Context, in SetCurrentInput) (*FinancialYear, error)
+	// Delete removes a year that is not current and that nothing uses (the DBA's check decides the rest).
+	Delete(ctx context.Context, finYr string) error
 }
 
 // Repository talks to pms.finyr_master and its DBA function and procedure.
@@ -29,6 +31,8 @@ type Repository interface {
 	// SetCurrent checks the year exists and calls the DBA's set-current procedure, under the create lock.
 	// changed is false when the year was already current.
 	SetCurrent(ctx context.Context, finYr string) (changed bool, err error)
+	// Delete refuses the current year, then runs the DBA's delete check and procedure, under the create lock.
+	Delete(ctx context.Context, finYr string) error
 }
 
 // CurrentRule decides whether a new year is current, given whether any year already is.

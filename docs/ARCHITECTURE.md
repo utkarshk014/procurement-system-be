@@ -221,6 +221,13 @@ missing `trust_name`), and `inst_code` is 7 characters (not 9) in the table chec
 procedure and the validate function. Live still has both bugs (open items); drop each
 fix once Uncle installs it.
 
+`004_delete_objects.sql` holds the delete procedures and their `*_validate_delete` checks
+from `TABLE_PROCEDURE_FUNCTION_1_2.xlsx` (11 Nov). Six are verbatim; four are **marked
+local fixes** we sent the DBA (`delete_fixes.sql`): `finyr_master_validate_delete` read a
+`company_master.finyr` column that does not exist, `mst_place_validate_delete` had a typo
+(`IS NU+I6LL`) and did not install, and both region objects used `region_code` instead of
+`regn_code`.
+
 ## 6. Setup wizard
 
 The walkthrough's wizard, in order. `GET /setup/status` returns `next_step`.
@@ -301,7 +308,7 @@ missing one is kept (the procedure replaces every column), then
 ## 9. Trusts (Form 4)
 
 `trust_code` is the key: trim, upper-case, exactly 3 letters; it never changes.
-There is no delete yet (see open items). Rules, all field problems returned together:
+A trust can be deleted while no institution uses it (see Deletes). Rules, all field problems returned together:
 
 | Field | Rule |
 |---|---|
@@ -325,8 +332,8 @@ constants), and one repository, use case and controller serve all three. Code: t
 upper-case, `^[A-Z]{3}$`; name: spaces tidied, ≤ 250, unique ignoring case. Order: our
 checks → duplicates (409) → the DBA's validate function → one transaction holding
 `pg_advisory_xact_lock(hashtext('pms.mst_place'))` (per table): re-check, re-validate,
-`CALL` his insert. His inserts RAISE on duplicates (P0001), mapped the same way. No edit
-or delete: he has given no procedure for them.
+`CALL` his insert. His inserts RAISE on duplicates (P0001), mapped the same way. Deletes
+go through his delete procedures (§11). No edit: he has given no update procedure.
 
 **Institutions.**
 
@@ -344,7 +351,18 @@ Write order: our checks and lookups → ACM/reg/full code free (409) →
 `fn_mst_inst_validate` → one transaction holding `pg_advisory_xact_lock(hashtext('pms.mst_inst'))`:
 re-check the codes, re-validate, `CALL pms.sp_mst_inst_insert`.
 
-## 11. Errors
+## 11. Deletes
+
+Every delete goes through the DBA: `pgutil.Delete` takes the table's own write lock, runs
+his `*_validate_delete(code)`, then `CALL`s his `*_delete(code)`, in one transaction.
+His "does not exist" is a `404`; any other refusal (*Cannot delete! … already used in …*)
+is a `409` carrying his message, and a foreign key that still points at the row is a `409`
+too. Financial years add one rule of ours inside the lock: the current year cannot be
+deleted (it would leave no year current). Routes: `DELETE /financial-years/{finyr}`,
+`/trusts/{code}`, `/places/{code}`, `/branches/{code}`, `/regions/{code}`. CORS allows
+`DELETE`. Institutions have no delete procedure yet.
+
+## 12. Errors
 
 Use cases return `domain.AppError`; `delivery/rest/utils.WriteError` is the
 only place that maps them to HTTP.
@@ -363,13 +381,13 @@ only place that maps them to HTTP.
 | `service_unavailable` | 503 | A database could not be reached, or Postgres is shutting down or starting up |
 | `timeout` | 504 | The request ran past `REQUEST_TIMEOUT` (e.g. a stuck database) |
 
-## 12. Open items for the DBA
+## 13. Open items for the DBA
 
 1. Agree to the `pms.sys_*` tables (or provide a separate `platform` schema).
 2. `company_master.time_zone` is `TIMESTAMPTZ`, so the zone name is lost;
    `VARCHAR` holding `Asia/Kolkata` would keep it.
 3. A `rec_updated_at` column on `company_master`.
-4. Done 9 Nov: `pms.mst_finyr_set_current(take_finyr)` is installed on live. There is still no way to edit or delete a year.
+4. Done 9 Nov: `pms.mst_finyr_set_current(take_finyr)` is installed on live. A year can be deleted (11 Nov) but not edited.
 5. `finyr_master_validate` does not check the `YYYY-YYYY` format, the 1 April–31 March
    dates or the 9-character limit — we enforce them in the API.
 6. Confirm the 1 April rule for `fin_st_dt` and which company fields are mandatory.
@@ -378,13 +396,14 @@ only place that maps them to HTTP.
 9. `comm_mail_pwd` is the password for sending and receiving mail (Uncle, 9 Nov). Built write-only, never returned or logged; it is stored as plain text, so encrypt it in the app before mail sending is built.
 10. PAN/GSTIN numbers are optional even when enabled, validated when keyed (Uncle, 9 Nov). Still open: is the enabled date the registration date, and may it be in the future? (built: not after today).
 11. Must a trust's `wrk_st_date` fall inside its `wrk_st_finyr`? (built: inside).
-12. Trust delete and edits (Uncle, 9 Nov): a trust may be deleted only while it has no transactions, and cannot be altered once transactions exist. There are no transaction tables yet, so neither is enforced; a delete needs a DBA procedure that checks for transactions (we have no `DELETE` right on `mst_trust`).
+12. Trust delete (11 Nov): `mst_trust_delete` and `mst_trust_validate_delete` are in v1.2 and work; Uncle granted `esispmsuser` the rights. His check covers institutions only; once transaction tables exist it must also refuse a trust with transactions, and edits must be blocked then too.
 13. Form 5, `sp_mst_inst_insert` reads `trust_name` from `mst_trust`; the column is `trust_desc`, so every institution insert fails on live (`column "trust_name" does not exist`). Fixed locally in `003_local_fixes.sql`.
 14. Form 5, `inst_code` is 9 characters in the table check, procedure and validate function, but the client's codes are 7 (`ACU-009`) and 7 + `:` + 6 = 14 is the full code. With 9, no full code can be 14, so nothing can be saved. We built 7; fixed locally.
 15. Form 5, `inst_reg_code` is UNIQUE, but the client's sheet reuses reg codes across trusts (`CBP-01` under ACU, OTU, SAM and SAT). Built: unique everywhere, as the table says.
 16. Form 5, the reg code prefix looks like the region code, but `mst_inst` has no `regn_code`. Built: the prefix must be an existing region.
-17. Form 5, no update or delete procedures for place, branch, region or institution, so nothing can be edited (the old screen has Edit/Save).
+17. Form 5, delete procedures for place, branch and region arrived 11 Nov (built); still no update procedure for any of them, and no delete for institutions, so nothing can be edited (the old screen has Edit/Save).
 18. Form 5, codes letters only? Uncle's checks only count 3 characters (`"1 a"` passes). Built: `^[A-Z]{3}$`, like trusts.
 19. Form 5, the old screen has an accountant designation but `mst_inst` has no `inst_acnt_desig`; the table has a liaison officer the screen does not. Built: the table's fields.
 20. Form 5, what is `reg_date`? Built: defaults to today, never in the future. Which fields are mandatory? Built: trust, codes, name, place, branch, start year.
 21. Form 5, `mst_branch` and `mst_inst` have no `last_update_at` trigger (place and region do).
+22. Deletes (v1.2, 11 Nov): four objects need the fixed text in `delete_fixes.sql` before they work on live: `finyr_master_validate_delete` (reads a missing `company_master.finyr`), `mst_place_validate_delete` (typo, does not install), `mst_region_delete` and `mst_region_validate_delete` (`region_code` → `regn_code`). Until then, deleting a financial year, place or region on live fails.

@@ -277,3 +277,4 @@ func TestCompanyNeedsTenantAccount(t *testing.T) {
 	_, err = uc.Get(platform)
 	assert.True(t, domain.IsKind(err, domain.KindForbidden))
 }
+func (f *fakeFinYears) Delete(context.Context, string) error { return nil }

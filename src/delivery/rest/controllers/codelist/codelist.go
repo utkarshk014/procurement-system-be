@@ -15,6 +15,7 @@ type CodeListController interface {
 	Get(w http.ResponseWriter, r *http.Request) error
 	Validate(w http.ResponseWriter, r *http.Request) error
 	Create(w http.ResponseWriter, r *http.Request) error
+	Delete(w http.ResponseWriter, r *http.Request) error
 }
 
 type codeListController struct {
@@ -78,5 +79,14 @@ func (c *codeListController) Create(w http.ResponseWriter, r *http.Request) erro
 		return err
 	}
 	rest_utils.Respond(w, http.StatusCreated, e)
+	return nil
+}
+
+// Delete removes a row that nothing uses yet (204).
+func (c *codeListController) Delete(w http.ResponseWriter, r *http.Request) error {
+	if err := c.uc.Delete(r.Context(), chi.URLParam(r, "code")); err != nil {
+		return err
+	}
+	rest_utils.NoContent(w)
 	return nil
 }

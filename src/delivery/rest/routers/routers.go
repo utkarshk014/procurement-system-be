@@ -74,6 +74,7 @@ func SetFinYearRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controlle
 		r.Get("/options", rest_utils.Wrap(logger, c.Options))
 		r.Get("/current", rest_utils.Wrap(logger, c.Current))
 		r.Put("/current", rest_utils.Wrap(logger, c.SetCurrent))
+		r.Delete("/{finyr}", rest_utils.Wrap(logger, c.Delete))
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
 		r.Post("/", rest_utils.Wrap(logger, c.Create))
 	})
@@ -92,7 +93,8 @@ func SetCompanyRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controlle
 	})
 }
 
-// SetTrustRoutes: the trust master (Form 4), tenant admins only. A trust code never changes and there is no delete.
+// SetTrustRoutes: the trust master (Form 4), tenant admins only. A trust code never changes; a trust
+// can be deleted while no institution uses it.
 func SetTrustRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_trust.TrustController, logger *slog.Logger) {
 	r.Route("/api/v1/trusts", func(r chi.Router) {
 		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
@@ -101,11 +103,12 @@ func SetTrustRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
 		r.Get("/{code}", rest_utils.Wrap(logger, c.Get))
 		r.Put("/{code}", rest_utils.Wrap(logger, c.Update))
+		r.Delete("/{code}", rest_utils.Wrap(logger, c.Delete))
 	})
 }
 
 // SetCodeListRoute: one of Form 5's code lists (/places, /branches, /regions), tenant admins only.
-// There is no update or delete: the DBA has given only insert procedures.
+// There is no update: the DBA has given insert and delete procedures only.
 func SetCodeListRoute(r chi.Router, path string, auth middlewares.AuthMiddleware, c controllers_codelist.CodeListController, logger *slog.Logger) {
 	r.Route("/api/v1/"+path, func(r chi.Router) {
 		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
@@ -113,6 +116,7 @@ func SetCodeListRoute(r chi.Router, path string, auth middlewares.AuthMiddleware
 		r.Post("/", rest_utils.Wrap(logger, c.Create))
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
 		r.Get("/{code}", rest_utils.Wrap(logger, c.Get))
+		r.Delete("/{code}", rest_utils.Wrap(logger, c.Delete))
 	})
 }
 

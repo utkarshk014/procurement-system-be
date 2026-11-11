@@ -19,22 +19,27 @@ var CodeRe = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // Kind names one list and the DBA objects behind it. Every field is a constant, never input.
 type Kind struct {
-	Label    string // "Place": starts the DBA's messages and our own
-	Plural   string // "places", for our own messages
-	Table    string // pms.mst_place
-	CodeCol  string // place_code
-	NameCol  string // place_name
-	Insert   string // pms.mst_place_insert(code, name)
-	Validate string // pms.mst_place_validate(code, name)
+	Label     string // "Place": starts the DBA's messages and our own
+	Plural    string // "places", for our own messages
+	Table     string // pms.mst_place
+	CodeCol   string // place_code
+	NameCol   string // place_name
+	Insert    string // pms.mst_place_insert(code, name)
+	Validate  string // pms.mst_place_validate(code, name)
+	Delete    string // pms.mst_place_delete(code)
+	CanDelete string // pms.mst_place_validate_delete(code)
 }
 
 var (
 	Place = Kind{Label: "Place", Plural: "places", Table: "pms.mst_place", CodeCol: "place_code", NameCol: "place_name",
-		Insert: "pms.mst_place_insert", Validate: "pms.mst_place_validate"}
+		Insert: "pms.mst_place_insert", Validate: "pms.mst_place_validate",
+		Delete: "pms.mst_place_delete", CanDelete: "pms.mst_place_validate_delete"}
 	Branch = Kind{Label: "Branch", Plural: "branches", Table: "pms.mst_branch", CodeCol: "branch_code", NameCol: "branch_name",
-		Insert: "pms.mst_branch_insert", Validate: "pms.mst_branch_validate"}
+		Insert: "pms.mst_branch_insert", Validate: "pms.mst_branch_validate",
+		Delete: "pms.mst_branch_delete", CanDelete: "pms.mst_branch_validate_delete"}
 	Region = Kind{Label: "Region", Plural: "regions", Table: "pms.mst_region", CodeCol: "regn_code", NameCol: "regn_name",
-		Insert: "pms.mst_region_insert", Validate: "pms.mst_region_validate"}
+		Insert: "pms.mst_region_insert", Validate: "pms.mst_region_validate",
+		Delete: "pms.mst_region_delete", CanDelete: "pms.mst_region_validate_delete"}
 )
 
 // Entry is one row of a list. The JSON is the same for all three lists.

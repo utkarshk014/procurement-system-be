@@ -162,3 +162,19 @@ func (uc *trustUsecase) checkWorkingStart(ctx context.Context, fields []domain.F
 	}
 	return fields, nil
 }
+
+func (uc *trustUsecase) Delete(ctx context.Context, code string) error {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return err
+	}
+	code = domain_trust.NormalizeCode(code)
+	if !domain_trust.CodeRe.MatchString(code) {
+		return domain_trust.ErrNotFound
+	}
+	if err := uc.repo.Delete(ctx, code); err != nil {
+		return err
+	}
+	uc.logger.InfoContext(ctx, "trust deleted", "tenant", p.TenantCode, "user_id", p.UserID, "trust_code", code)
+	return nil
+}

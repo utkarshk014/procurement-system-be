@@ -177,3 +177,29 @@ func (r *postgresFinYearRepository) Create(ctx context.Context, fy *domain_finye
 		return nil
 	})
 }
+
+func (r *postgresFinYearRepository) Delete(ctx context.Context, finYr string) error {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgutil.Delete(ctx, pool, pgutil.DBADelete{
+		// The same lock as create and set-current, so the year cannot become current mid-delete.
+		Lock: "pms.finyr_master", Validate: "pms.finyr_master_validate_delete", Procedure: "pms.finyr_master_delete",
+		What: "Financial year",
+		Guard: func(ctx context.Context, tx pgx.Tx) error {
+			var isCurrent bool
+			err := tx.QueryRow(ctx,
+				`SELECT COALESCE(finyr_is_current, FALSE) FROM pms.finyr_master WHERE finyr = $1`, finYr).Scan(&isCurrent)
+			switch {
+			case pgutil.IsNoRows(err):
+				return domain.NotFound("Financial year not found")
+			case err != nil:
+				return domain.Internal("Could not load financial year", err)
+			case isCurrent:
+				return domain_finyear.ErrDeleteCurrent
+			}
+			return nil
+		},
+	}, finYr, domain.NotFound("Financial year not found"))
+}

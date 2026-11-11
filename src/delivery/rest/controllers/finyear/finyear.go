@@ -1,6 +1,7 @@
 package controllers_finyear
 
 import (
+	"github.com/go-chi/chi/v5"
 	"log/slog"
 	"net/http"
 
@@ -17,6 +18,7 @@ type FinYearController interface {
 	Validate(w http.ResponseWriter, r *http.Request) error
 	Create(w http.ResponseWriter, r *http.Request) error
 	SetCurrent(w http.ResponseWriter, r *http.Request) error
+	Delete(w http.ResponseWriter, r *http.Request) error
 }
 
 type finYearController struct {
@@ -101,5 +103,14 @@ func (fc *finYearController) SetCurrent(w http.ResponseWriter, r *http.Request) 
 		return err
 	}
 	rest_utils.Respond(w, http.StatusOK, fy)
+	return nil
+}
+
+// Delete removes a year that is not current and that nothing uses yet (204).
+func (fc *finYearController) Delete(w http.ResponseWriter, r *http.Request) error {
+	if err := fc.usecases.FinancialYear.Delete(r.Context(), chi.URLParam(r, "finyr")); err != nil {
+		return err
+	}
+	rest_utils.NoContent(w)
 	return nil
 }

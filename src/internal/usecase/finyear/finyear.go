@@ -200,3 +200,19 @@ func currentRule(explicit *bool, isTodaysYear bool) domain_finyear.CurrentRule {
 		}
 	}
 }
+
+func (uc *finYearUsecase) Delete(ctx context.Context, finYr string) error {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return err
+	}
+	finYr = strings.TrimSpace(finYr)
+	if _, ok := domain_finyear.ParseFinYr(finYr); !ok {
+		return domain.NotFound("Financial year not found")
+	}
+	if err := uc.repo.Delete(ctx, finYr); err != nil {
+		return err
+	}
+	uc.logger.InfoContext(ctx, "financial year deleted", "tenant", p.TenantCode, "user_id", p.UserID, "finyr", finYr)
+	return nil
+}

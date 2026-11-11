@@ -122,3 +122,6 @@ func FunctionError(message string) error {
 	}
 	return domain.Validation(fe)
 }
+
+// ErrDeleteCurrent is the 409 for deleting the current year, which would leave no year current.
+var ErrDeleteCurrent = domain.Conflict("The current financial year cannot be deleted. Make another year current first.")

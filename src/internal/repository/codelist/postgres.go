@@ -167,3 +167,13 @@ func (r *postgresCodeListRepository) Create(ctx context.Context, e *domain_codel
 		return nil
 	})
 }
+
+func (r *postgresCodeListRepository) Delete(ctx context.Context, code string) error {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgutil.Delete(ctx, pool, pgutil.DBADelete{
+		Lock: r.kind.Table, Validate: r.kind.CanDelete, Procedure: r.kind.Delete, What: r.kind.Label,
+	}, code, r.kind.NotFound())
+}

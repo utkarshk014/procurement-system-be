@@ -146,3 +146,21 @@ func TestNeedsATenantAdmin(t *testing.T) {
 	_, err = newUC(newRepo()).Create(context.Background(), domain_codelist.Input{Code: "MYS", Name: "Mysore"})
 	assert.Error(t, err)
 }
+
+func (f *fakeRepo) Delete(_ context.Context, code string) error {
+	if _, ok := f.rows[code]; !ok {
+		return f.kind.NotFound()
+	}
+	delete(f.rows, code)
+	return nil
+}
+
+func TestDeleteNormalisesTheCode(t *testing.T) {
+	repo := newRepo()
+	repo.rows["MYS"] = domain_codelist.Entry{Code: "MYS", Name: "Mysore"}
+	require.NoError(t, newUC(repo).Delete(tenantCtx(), " mys "))
+	assert.Empty(t, repo.rows)
+	assert.True(t, domain.IsKind(newUC(repo).Delete(tenantCtx(), "MYS"), domain.KindNotFound))
+	assert.True(t, domain.IsKind(newUC(repo).Delete(tenantCtx(), "M1S"), domain.KindNotFound))
+	assert.Error(t, newUC(repo).Delete(context.Background(), "MYS"), "tenant admins only")
+}

@@ -46,7 +46,7 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 	r.Use(middleware.Timeout(cfg.RequestTimeout))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins: cfg.CORSAllowedOrigins,
-		AllowedMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodOptions},
+		AllowedMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions},
 		AllowedHeaders: []string{"Authorization", "Content-Type", "X-Request-Id"},
 		ExposedHeaders: []string{"X-Request-Id"},
 		MaxAge:         300,

@@ -175,3 +175,13 @@ func (r *postgresTrustRepository) write(ctx context.Context, t *domain_trust.Tru
 		return nil
 	})
 }
+
+func (r *postgresTrustRepository) Delete(ctx context.Context, code string) error {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgutil.Delete(ctx, pool, pgutil.DBADelete{
+		Lock: "pms.mst_trust", Validate: "pms.mst_trust_validate_delete", Procedure: "pms.mst_trust_delete", What: "Trust",
+	}, code, domain_trust.ErrNotFound)
+}
