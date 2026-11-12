@@ -351,6 +351,17 @@ Write order: our checks and lookups → ACM/reg/full code free (409) →
 `fn_mst_inst_validate` → one transaction holding `pg_advisory_xact_lock(hashtext('pms.mst_inst'))`:
 re-check the codes, re-validate, `CALL pms.sp_mst_inst_insert`.
 
+### Excel import
+
+`packages/sheet` reads the first sheet of an `.xlsx` (excelize) as text, keeping number cells
+as plain digits and date cells as dates, and builds the template. The import use case maps
+headers by name (aliases include the old system's `ACM_*`), loads trusts, places, branches,
+regions, years and the codes in use **once**, and checks every row with the same
+`prepareWith` the single create uses (lookups come from memory instead of one query each).
+The DBA's validate function runs for all rows in one `unnest … CROSS JOIN LATERAL` query, and
+the save sends all `CALL`s in one pgx batch inside one locked transaction. This matters
+because the live database is far from Render: 571 rows one by one would take over a minute.
+
 ## 11. Deletes
 
 Every delete goes through the DBA: `pgutil.Delete` takes the table's own write lock, runs

@@ -252,3 +252,171 @@ func (r *postgresInstitutionRepository) Create(ctx context.Context, i *domain_in
 		return nil
 	})
 }
+
+func (r *postgresInstitutionRepository) ExistingCodes(ctx context.Context) (map[string]string, map[string]string, error) {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return nil, nil, err
+	}
+	return existingCodes(ctx, pool)
+}
+
+func existingCodes(ctx context.Context, q pgutil.Querier) (map[string]string, map[string]string, error) {
+	rows, err := q.Query(ctx, `SELECT inst_code, inst_reg_code FROM pms.mst_inst`)
+	if err != nil {
+		return nil, nil, domain.Internal("Could not read institution codes", err)
+	}
+	defer rows.Close()
+	codes, regs := map[string]string{}, map[string]string{}
+	for rows.Next() {
+		var code, reg string
+		if err := rows.Scan(&code, &reg); err != nil {
+			return nil, nil, domain.Internal("Could not read institution codes", err)
+		}
+		codes[code], regs[reg] = code, code
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, domain.Internal("Could not read institution codes", err)
+	}
+	return codes, regs, nil
+}
+
+func (r *postgresInstitutionRepository) CheckManyWithFunction(ctx context.Context, list []domain_institution.Institution) ([]domain_institution.FunctionResult, error) {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return nil, err
+	}
+	return checkMany(ctx, pool, list)
+}
+
+// checkMany calls the DBA's validate function once per row, all in one query: the rows go in as
+// parallel arrays and come back in the same order (WITH ORDINALITY).
+func checkMany(ctx context.Context, q pgutil.Querier, list []domain_institution.Institution) ([]domain_institution.FunctionResult, error) {
+	if len(list) == 0 {
+		return nil, nil
+	}
+	cols := make([][]*string, 13)
+	for i := range cols {
+		cols[i] = make([]*string, len(list))
+	}
+	opt := func(s string) *string {
+		if s == "" {
+			return nil
+		}
+		return &s
+	}
+	for i, in := range list {
+		vals := []string{in.Code, in.RegCode, in.FullCode, in.PlaceCode, in.BranchCode, in.TrustCode, in.Email,
+			in.HeadMobile, in.HeadEmail, in.AcntMobile, in.AcntEmail, in.LiasonMobile, in.LiasonEmail}
+		for c, v := range vals {
+			if c < 3 {
+				cols[c][i] = &vals[c] // the three codes are always sent, even if empty
+			} else {
+				cols[c][i] = opt(v)
+			}
+		}
+	}
+	args := make([]any, len(cols))
+	for i := range cols {
+		args[i] = cols[i]
+	}
+	rows, err := q.Query(ctx, `
+		SELECT v.is_valid, v.error_message
+		FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[],
+		            $8::text[], $9::text[], $10::text[], $11::text[], $12::text[], $13::text[])
+		     WITH ORDINALITY AS t(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, n)
+		CROSS JOIN LATERAL pms.fn_mst_inst_validate(
+		     t.a1::varchar, t.a2::varchar, t.a3::varchar, t.a4::varchar, t.a5::varchar, t.a6::varchar, t.a7::varchar,
+		     t.a8::varchar, t.a9::varchar, t.a10::varchar, t.a11::varchar, t.a12::varchar, t.a13::varchar) AS v
+		ORDER BY t.n`, args...)
+	if err != nil {
+		return nil, domain.Internal("Could not run institution validation", err)
+	}
+	defer rows.Close()
+	out := make([]domain_institution.FunctionResult, 0, len(list))
+	for rows.Next() {
+		var res domain_institution.FunctionResult
+		if err := rows.Scan(&res.Valid, &res.Message); err != nil {
+			return nil, domain.Internal("Could not read institution validation", err)
+		}
+		out = append(out, res)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, domain.Internal("Could not run institution validation", err)
+	}
+	if len(out) != len(list) {
+		return nil, domain.Internal("Institution validation returned the wrong number of rows", nil)
+	}
+	return out, nil
+}
+
+// ErrImportChanged is returned when, between the check and the save, another user took one of
+// the file's codes or the DBA's check started failing. Nothing was saved.
+var ErrImportChanged = domain.Conflict("Something changed while importing (a code was taken or a check now fails). Nothing was saved; check the file again.")
+
+func (r *postgresInstitutionRepository) CreateMany(ctx context.Context, list []domain_institution.Institution) error {
+	if len(list) == 0 {
+		return nil
+	}
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, lockSQL); err != nil {
+			return domain.Internal("Could not lock institutions", err)
+		}
+		codes, regs, err := existingCodes(ctx, tx)
+		if err != nil {
+			return err
+		}
+		for _, in := range list {
+			if _, ok := codes[in.Code]; ok {
+				return ErrImportChanged
+			}
+			if _, ok := regs[in.RegCode]; ok {
+				return ErrImportChanged
+			}
+		}
+		results, err := checkMany(ctx, tx, list)
+		if err != nil {
+			return err
+		}
+		for _, res := range results {
+			if !res.Valid {
+				return ErrImportChanged
+			}
+		}
+		n := pgutil.NullString
+		batch := &pgx.Batch{}
+		for _, i := range list {
+			batch.Queue(`CALL pms.sp_mst_inst_insert(
+			  $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar, $6::varchar,
+			  $7::varchar, $8::varchar, $9::varchar,
+			  NULL::integer, NULL::integer, NULL::integer, NULL::integer,
+			  $10::date, $11::varchar,
+			  $12::varchar, $13::varchar,
+			  $14::varchar, $15::varchar, $16::varchar, $17::varchar,
+			  $18::varchar, $19::varchar, $20::varchar,
+			  $21::varchar, $22::varchar, $23::varchar, $24::varchar)`,
+				i.Code, i.RegCode, i.FullCode, i.Name, n(i.Address), n(i.Locality),
+				i.PlaceCode, i.BranchCode, i.TrustCode,
+				i.RegDate, i.FromFinYr,
+				n(i.Email), n(i.Tel),
+				n(i.HeadName), n(i.HeadDesig), n(i.HeadMobile), n(i.HeadEmail),
+				n(i.AcntName), n(i.AcntMobile), n(i.AcntEmail),
+				n(i.LiasonName), n(i.LiasonDesig), n(i.LiasonMobile), n(i.LiasonEmail))
+		}
+		if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+				return domain.Conflict("The database refused a row: " + pgErr.Message + ". Nothing was saved.")
+			}
+			if _, ok := pgutil.UniqueViolation(err); ok {
+				return ErrImportChanged
+			}
+			return domain.Internal("Could not save the institutions", err)
+		}
+		return nil
+	})
+}

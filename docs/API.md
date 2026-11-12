@@ -79,6 +79,8 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | GET | `/api/v1/institutions/next-code` | tenant_admin | Suggested next ACM and reg codes |
 | POST | `/api/v1/institutions/validate` | tenant_admin | Dry-run a create |
 | POST | `/api/v1/institutions` | tenant_admin | Add an institution (201) |
+| POST | `/api/v1/institutions/import` | tenant_admin | Check (`?dry_run=true`) or import an .xlsx of institutions |
+| GET | `/api/v1/institutions/import/template` | tenant_admin | The import template (.xlsx) |
 
 ---
 
@@ -499,6 +501,54 @@ Query: `trust_code`, `branch_code`, `place_code`, `q` (part of the name or full 
 The highest number used with each prefix, plus one: `{ "inst_code": "SAT-413", "inst_reg_code": "MYS-60" }`.
 Either parameter may be left out (its field is then `""`); a prefix whose numbers are
 used up (999 / 99) also returns `""`.
+
+### `POST /institutions/import` (Excel import)
+
+Upload an `.xlsx` as `multipart/form-data`, field `file` (5 MB, 5,000 rows at most; an old
+`.xls` or a CSV is refused with *the file is not an Excel .xlsx workbook*). Only the first
+sheet is read; row 1 is the header. Headers are matched ignoring case, spaces and
+punctuation, and the old system's names work too:
+
+| Column | Also accepted | Required |
+|---|---|---|
+| `trust_code` | `ACM_INST_TRUST`, `trust` | yes |
+| `inst_code` | `ACM_CODE` | yes |
+| `inst_reg_code` | `ACM_REG_CODE` | yes |
+| `inst_name` | `ACM_INST_NAME`, `name` | yes |
+| `place` | `ACM_INST_PLACE`, `place_code`, `place_name` | yes, a place **code or name** from the places list |
+| `branch` | `ACM_INST_BRANCH`, `branch_code`, `branch_name` | yes, a branch **code or name** |
+| `from_fin_yr`, `reg_date`, `inst_add`, `inst_place`, `inst_tel`, `inst_email`, head / accountant / liaison columns | | no |
+| `inst_full_code`, `regn_code` | `ACM_FULL_CODE`, `ACM_INST_REG_SHORT_CODE` | no; checked against the codes, never stored |
+
+Every row gets exactly the checks of `POST /institutions`, plus:
+- the codes must not repeat inside the file;
+- a place or branch must match a code or a name, where names ignore case and spaces;
+- an empty `from_fin_yr` means the current year;
+- a place given by name also becomes `inst_place` (the locality) when that column is empty;
+- number cells keep all their digits, and date cells are read as dates.
+
+Then the DBA's `fn_mst_inst_validate` runs for all rows in one query.
+
+`?dry_run=true` saves nothing. Without it, **every ready row is saved in one transaction**:
+the codes and the DBA's check are re-run under the create lock first, and if anything
+changed meanwhile nothing is saved (`409`). Rows with problems are skipped, so fixing them
+and uploading the same file again imports only those (the rest are *already used*).
+
+```json
+{ "data": { "dry_run": true, "total": 571, "ready": 120, "imported": 0, "skipped": 451,
+  "default_from_fin_yr": "2026-2027",
+  "problems": [ { "row": 3, "inst_code": "SAT-002", "inst_name": "…",
+                  "errors": [ { "field": "place_code", "message": "\"Kunigal\" is not in the places list" } ] } ],
+  "missing_places":   [ { "name": "Kunigal", "rows": 4 } ],
+  "missing_branches": [ { "name": "Mysore Branch", "rows": 72 } ] } }
+```
+
+`missing_places` and `missing_branches` list every name the file uses that the lists do
+not have yet, most used first, so they can be added in one go. `422` on `file` for a
+missing required column, an empty sheet or a non-.xlsx file.
+
+`GET /institutions/import/template` returns an `.xlsx` with every column, an example row
+and a Help sheet.
 
 ---
 

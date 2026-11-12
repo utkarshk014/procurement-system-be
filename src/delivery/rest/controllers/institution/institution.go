@@ -1,6 +1,7 @@
 package controllers_institution
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
 	domain_institution "github.com/utkarshk014/procurement-system-be/src/internal/domain/institution"
 	"github.com/utkarshk014/procurement-system-be/src/internal/usecase"
+	"github.com/utkarshk014/procurement-system-be/src/packages/sheet"
 )
 
 // InstitutionController serves the institution master (Form 5) of the caller's tenant.
@@ -19,6 +21,8 @@ type InstitutionController interface {
 	NextCodes(w http.ResponseWriter, r *http.Request) error
 	Validate(w http.ResponseWriter, r *http.Request) error
 	Create(w http.ResponseWriter, r *http.Request) error
+	Import(w http.ResponseWriter, r *http.Request) error
+	ImportTemplate(w http.ResponseWriter, r *http.Request) error
 }
 
 type institutionController struct {
@@ -118,5 +122,67 @@ func (c *institutionController) Create(w http.ResponseWriter, r *http.Request) e
 		return err
 	}
 	rest_utils.Respond(w, http.StatusCreated, i)
+	return nil
+}
+
+// maxImportBytes bounds an uploaded import file; 571 institutions are about 50 KB.
+const maxImportBytes = 5 << 20
+
+// Import checks (?dry_run=true) or imports an .xlsx uploaded as the multipart field "file".
+func (c *institutionController) Import(w http.ResponseWriter, r *http.Request) error {
+	dryRun := r.URL.Query().Get("dry_run") == "true"
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes+1<<20)
+	if err := r.ParseMultipartForm(maxImportBytes); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return domain.InvalidParams("The file is too large (5 MB at most)")
+		}
+		return domain.InvalidParams("Upload the file as multipart/form-data in the field \"file\"")
+	}
+	defer r.MultipartForm.RemoveAll()
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		return domain.InvalidParams("Upload the file as multipart/form-data in the field \"file\"")
+	}
+	defer file.Close()
+	if header.Size > maxImportBytes {
+		return domain.InvalidParams("The file is too large (5 MB at most)")
+	}
+	rows, err := sheet.ReadFirstSheet(file)
+	if err != nil {
+		return domain.Validation(domain.FieldError{Field: "file", Message: err.Error()})
+	}
+	report, err := c.usecases.Institution.Import(r.Context(), rows, dryRun)
+	if err != nil {
+		return err
+	}
+	rest_utils.Respond(w, http.StatusOK, report)
+	return nil
+}
+
+// ImportTemplate returns an .xlsx with every import column, an example row and a Help sheet.
+func (c *institutionController) ImportTemplate(w http.ResponseWriter, r *http.Request) error {
+	examples := map[string]string{
+		"trust_code": "SAT", "inst_code": "SAT-001", "inst_reg_code": "MYS-01", "inst_name": "BGS Public School",
+		"place": "MYS", "branch": "MYB", "from_fin_yr": "", "reg_date": "", "inst_add": "Kuvempunagar",
+		"inst_place": "Kuvempunagar", "inst_tel": "0821 2541234", "inst_email": "office@example.in",
+		"inst_head_name": "Dr. Head", "inst_head_desig": "Principal", "inst_head_mobile": "9845012345",
+		"inst_head_email": "head@example.in",
+	}
+	var cols []sheet.Column
+	for _, col := range domain_institution.ImportColumns {
+		if col.Header == "inst_full_code" || col.Header == "regn_code" {
+			continue // optional checks for the old system's sheet; not part of the template
+		}
+		cols = append(cols, sheet.Column{Header: col.Header, Example: examples[col.Header], Help: col.Help, Required: col.Required})
+	}
+	data, err := sheet.Template("Institutions", cols)
+	if err != nil {
+		return domain.Internal("Could not build the template", err)
+	}
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	w.Header().Set("Content-Disposition", `attachment; filename="institutions-import-template.xlsx"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 	return nil
 }

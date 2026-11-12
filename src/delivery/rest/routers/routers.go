@@ -120,7 +120,8 @@ func SetCodeListRoute(r chi.Router, path string, auth middlewares.AuthMiddleware
 	})
 }
 
-// SetInstitutionRoutes: the institution master (Form 5), tenant admins only. No update or delete yet.
+// SetInstitutionRoutes: the institution master (Form 5), tenant admins only, including the .xlsx
+// import. No update or delete yet.
 func SetInstitutionRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_institution.InstitutionController, logger *slog.Logger) {
 	r.Route("/api/v1/institutions", func(r chi.Router) {
 		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
@@ -128,6 +129,8 @@ func SetInstitutionRoutes(r chi.Router, auth middlewares.AuthMiddleware, c contr
 		r.Post("/", rest_utils.Wrap(logger, c.Create))
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
 		r.Get("/next-code", rest_utils.Wrap(logger, c.NextCodes))
+		r.Get("/import/template", rest_utils.Wrap(logger, c.ImportTemplate))
+		r.Post("/import", rest_utils.Wrap(logger, c.Import))
 		r.Get("/{code}", rest_utils.Wrap(logger, c.Get))
 	})
 }

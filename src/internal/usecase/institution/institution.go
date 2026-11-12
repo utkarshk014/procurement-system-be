@@ -143,6 +143,50 @@ func (uc *institutionUsecase) Create(ctx context.Context, in domain_institution.
 // problems in one 422. A missing reg_date means today.
 func (uc *institutionUsecase) prepare(ctx context.Context, in domain_institution.Input) (*domain_institution.Institution, error) {
 	today := uc.now().In(uc.location).Format(domain_institution.DateLayout)
+	return prepareWith(ctx, in, today, dbRefs{uc.lookups})
+}
+
+// refs answers "does this code exist?" for every list an institution points into: one row at a
+// time from the database for a single create, or from lists loaded once for an import.
+type refs interface {
+	exists(ctx context.Context, list, code string) (bool, error)
+}
+
+const (
+	refTrust  = "trust"
+	refPlace  = "place"
+	refBranch = "branch"
+	refRegion = "region"
+	refYear   = "year"
+)
+
+type dbRefs struct{ l Lookups }
+
+func (d dbRefs) exists(ctx context.Context, list, code string) (bool, error) {
+	var err error
+	switch list {
+	case refTrust:
+		_, err = d.l.Trusts.Get(ctx, code)
+	case refPlace:
+		_, err = d.l.Places.Get(ctx, code)
+	case refBranch:
+		_, err = d.l.Branches.Get(ctx, code)
+	case refRegion:
+		_, err = d.l.Regions.Get(ctx, code)
+	case refYear:
+		_, err = d.l.FinYears.Get(ctx, code)
+	}
+	if err != nil {
+		if domain.IsKind(err, domain.KindNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// prepareWith is prepare with the lookups and "today" given.
+func prepareWith(ctx context.Context, in domain_institution.Input, today string, r refs) (*domain_institution.Institution, error) {
 	in = Normalize(in)
 	fields := Check(in, today)
 	has := map[string]bool{}
@@ -157,50 +201,26 @@ func (uc *institutionUsecase) prepare(ctx context.Context, in domain_institution
 	}
 
 	// Every code must point at a row that exists.
-	if in.TrustCode != "" && !has["trust_code"] {
-		if _, err := uc.lookups.Trusts.Get(ctx, in.TrustCode); err != nil {
-			if !domain.IsKind(err, domain.KindNotFound) {
-				return nil, err
-			}
-			add("trust_code", "must be an existing trust")
-		}
-	}
-	lookups := []struct {
-		field, code string
-		repo        domain_codelist.Repository
-		what        string
-	}{
-		{"place_code", in.PlaceCode, uc.lookups.Places, "place"},
-		{"branch_code", in.BranchCode, uc.lookups.Branches, "branch"},
+	checks := []struct{ field, list, code, msg string }{
+		{"trust_code", refTrust, in.TrustCode, "must be an existing trust"},
+		{"place_code", refPlace, in.PlaceCode, "must be an existing place"},
+		{"branch_code", refBranch, in.BranchCode, "must be an existing branch"},
+		{"from_fin_yr", refYear, in.FromFinYr, "must be an existing financial year"},
 	}
 	if m := domain_institution.RegCodeRe.FindStringSubmatch(in.RegCode); m != nil {
-		lookups = append(lookups, struct {
-			field, code string
-			repo        domain_codelist.Repository
-			what        string
-		}{"inst_reg_code", m[1], uc.lookups.Regions, "region code (" + m[1] + " is not one)"})
+		checks = append(checks, struct{ field, list, code, msg string }{
+			"inst_reg_code", refRegion, m[1], "must start with an existing region code (" + m[1] + " is not one)"})
 	}
-	for _, l := range lookups {
-		if l.code == "" || has[l.field] {
+	for _, c := range checks {
+		if c.code == "" || has[c.field] {
 			continue
 		}
-		if _, err := l.repo.Get(ctx, l.code); err != nil {
-			if !domain.IsKind(err, domain.KindNotFound) {
-				return nil, err
-			}
-			msg := "must be an existing " + l.what
-			if l.field == "inst_reg_code" {
-				msg = "must start with an existing " + l.what
-			}
-			add(l.field, msg)
+		ok, err := r.exists(ctx, c.list, c.code)
+		if err != nil {
+			return nil, err
 		}
-	}
-	if in.FromFinYr != "" && !has["from_fin_yr"] {
-		if _, err := uc.lookups.FinYears.Get(ctx, in.FromFinYr); err != nil {
-			if !domain.IsKind(err, domain.KindNotFound) {
-				return nil, err
-			}
-			add("from_fin_yr", "must be an existing financial year")
+		if !ok {
+			add(c.field, c.msg)
 		}
 	}
 	if len(fields) > 0 {

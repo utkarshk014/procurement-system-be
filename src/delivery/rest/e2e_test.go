@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +32,7 @@ import (
 	"github.com/utkarshk014/procurement-system-be/src/internal/usecase"
 	"github.com/utkarshk014/procurement-system-be/src/packages/database"
 	"github.com/utkarshk014/procurement-system-be/src/utils"
+	"github.com/xuri/excelize/v2"
 )
 
 // TestEndToEnd boots a throwaway PostgreSQL 11 with the DBA's pms objects
@@ -895,6 +897,110 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, 1, places, "MYS kept, RAC deleted")
 	})
 
+	t.Run("institutions import from .xlsx: dry run, import, re-import, bad files", func(t *testing.T) {
+		// The old system's own headers, a date cell, a number cell for a mobile, and every kind of bad row.
+		file := xlsxFile(t, func(f *excelize.File) {
+			rows := [][]any{
+				{"ACM_SL", "ACM_CODE", "ACM_REG_CODE", "ACM_FULL_CODE", "ACM_INST_NAME", "ACM_INST_PLACE", "ACM_INST_BRANCH", "ACM_INST_TRUST", "ACM_INST_REG_SHORT_CODE", "Head Mobile", "Reg Date"},
+				{1, "SAT-101", "MYS-31", "SAT-101:MYS-31", "Imported One", "mysore  PLACE", "MYS", "SAT", "MYS", 9845012345, nil},
+				{2, "SAT-102", "MYS-32", "SAT-102:MYS-32", "Missing Place", "Kunigal", "Mysore Branch", "SAT", "MYS", nil, nil},
+				{3, "SAT-101", "MYS-33", "SAT-101:MYS-33", "Same Code Again", "Mysore Place", "MYS", "SAT", "MYS", nil, nil},
+				{4, "SAT-001", "MYS-34", "SAT-001:MYS-34", "Code In Use", "Mysore Place", "MYS", "SAT", "MYS", nil, nil},
+				{5, "ACU-101", "BGN-31", "ACU-101:BGN-99", "Wrong Full Code", "B G Nagara Place", "BGN", "ACU", "BGN", nil, nil},
+				{6, "ZZZ-001", "MYS-35", "ZZZ-001:MYS-35", "Unknown Trust", "Mysore Place", "MYS", "ZZZ", "MYS", nil, nil},
+				{},
+				{8, "ACU-102", "BGN-32", "ACU-102:BGN-32", "Missing Branch", "B G Nagara Place", "Unknown Branch", "ACU", "BGN", nil, nil},
+				{9, "SAT-103", "MYS-37", "SAT-103:MYS-37", "Missing Place Again", "KUNIGAL", "MYS", "SAT", "MYS", nil, nil},
+				{10, "SAT-104", "MYS-36", "SAT-104:MYS-36", "Imported Two", "MYS", "Mysore Branch", "SAT", "MYS", nil, nil},
+			}
+			for i, r := range rows {
+				cell, _ := excelize.CoordinatesToCellName(1, i+1)
+				require.NoError(t, f.SetSheetRow("Sheet1", cell, &r))
+			}
+			date, _ := f.NewStyle(&excelize.Style{NumFmt: 14})
+			require.NoError(t, f.SetCellValue("Sheet1", "K11", time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)))
+			require.NoError(t, f.SetCellStyle("Sheet1", "K11", "K11", date))
+		})
+		var before int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_inst`).Scan(&before))
+
+		dry := api.upload("/api/v1/institutions/import?dry_run=true", esis, "inst.xlsx", file)
+		require.Equal(t, 200, dry.status, dry.body)
+		d := dry.data()
+		assert.Equal(t, true, d["dry_run"])
+		assert.Equal(t, float64(9), d["total"], "the blank row is ignored")
+		assert.Equal(t, float64(2), d["ready"])
+		assert.Equal(t, float64(0), d["imported"])
+		assert.Equal(t, float64(7), d["skipped"])
+		problems := map[float64]map[string]string{}
+		for _, p := range d["problems"].([]any) {
+			pm := p.(map[string]any)
+			fields := map[string]string{}
+			for _, e := range pm["errors"].([]any) {
+				em := e.(map[string]any)
+				f, _ := em["field"].(string)
+				fields[f] = em["message"].(string)
+			}
+			problems[pm["row"].(float64)] = fields
+		}
+		assert.Equal(t, `"Kunigal" is not in the places list`, problems[3]["place_code"])
+		assert.Equal(t, "is also in row 2 of this file", problems[4]["inst_code"])
+		assert.Equal(t, "is already used by SAT-001", problems[5]["inst_code"])
+		assert.Equal(t, "is ACU-101:BGN-99, but the ACM and reg codes make ACU-101:BGN-31", problems[6]["inst_full_code"])
+		assert.Equal(t, "must be an existing trust", problems[7]["trust_code"])
+		assert.Equal(t, `"Unknown Branch" is not in the branches list`, problems[9]["branch_code"])
+		assert.Contains(t, problems, float64(10))
+		assert.NotContains(t, problems, float64(2))
+		assert.NotContains(t, problems, float64(11))
+		assert.Equal(t, []any{map[string]any{"name": "Kunigal", "rows": float64(2)}}, d["missing_places"], "spellings that differ only in case are one place")
+		assert.Equal(t, []any{map[string]any{"name": "Unknown Branch", "rows": float64(1)}}, d["missing_branches"])
+		var after int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_inst`).Scan(&after))
+		assert.Equal(t, before, after, "a dry run writes nothing")
+
+		imp := api.upload("/api/v1/institutions/import", esis, "inst.xlsx", file)
+		require.Equal(t, 200, imp.status, imp.body)
+		assert.Equal(t, float64(2), imp.data()["imported"])
+		one := api.do("GET", "/api/v1/institutions/SAT-101", esis, nil).data()
+		assert.Equal(t, "SAT-101:MYS-31", one["inst_full_code"])
+		assert.Equal(t, "MYS", one["place_code"], "found by name, ignoring case and spaces")
+		assert.Equal(t, "mysore PLACE", one["inst_place"], "the place text becomes the locality")
+		assert.Equal(t, "9845012345", one["inst_head_mobile"], "a number cell stays 10 digits")
+		assert.Equal(t, curFY, one["from_fin_yr"], "the current year when the file has none")
+		two := api.do("GET", "/api/v1/institutions/SAT-104", esis, nil).data()
+		assert.Equal(t, "MYS", two["branch_code"], "found by its name, Mysore Branch")
+		assert.Equal(t, "", two["inst_place"], "a place given by code is not copied to the locality")
+		assert.Equal(t, "2025-06-01", two["reg_date"], "a date cell is read as a date")
+
+		again := api.upload("/api/v1/institutions/import", esis, "inst.xlsx", file)
+		require.Equal(t, 200, again.status, again.body)
+		assert.Equal(t, float64(0), again.data()["imported"], "importing the same file twice adds nothing")
+
+		missing := xlsxFile(t, func(f *excelize.File) {
+			require.NoError(t, f.SetSheetRow("Sheet1", "A1", &[]any{"trust_code", "inst_name"}))
+			require.NoError(t, f.SetSheetRow("Sheet1", "A2", &[]any{"SAT", "X"}))
+		})
+		res := api.upload("/api/v1/institutions/import?dry_run=true", esis, "x.xlsx", missing)
+		assert.Equal(t, 422, res.status)
+		assert.Contains(t, res.fieldErrors()["file"], "Missing column(s): inst_code, inst_reg_code, place, branch")
+
+		res = api.upload("/api/v1/institutions/import?dry_run=true", esis, "x.xls", []byte("not a workbook"))
+		assert.Equal(t, 422, res.status)
+		assert.Contains(t, res.fieldErrors()["file"], "not an Excel .xlsx workbook")
+		assert.Equal(t, 403, api.upload("/api/v1/institutions/import?dry_run=true", root, "inst.xlsx", file).status)
+		assert.Equal(t, 400, api.do("POST", "/api/v1/institutions/import", esis, map[string]any{}).status, "JSON is not a file upload")
+
+		tpl := api.raw("GET", "/api/v1/institutions/import/template", esis, "", "")
+		require.Equal(t, 200, tpl.status)
+		wb, err := excelize.OpenReader(strings.NewReader(tpl.body))
+		require.NoError(t, err)
+		header, err := wb.GetRows("Institutions")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"trust_code", "inst_code", "inst_reg_code", "inst_name", "place", "branch"}, header[0][:6])
+		helpRows, _ := wb.GetRows("Help")
+		assert.Greater(t, len(helpRows), 20)
+	})
+
 	t.Run("a delete and a create of the same trust cannot interleave", func(t *testing.T) {
 		require.Equal(t, 201, api.do("POST", "/api/v1/trusts/", esis, map[string]any{
 			"trust_code": "DLT", "trust_desc": "Delete race trust", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate}).status)
@@ -1193,4 +1299,26 @@ func concurrently(n int, fn func(i int) int) []int {
 	wg.Wait()
 	sort.Ints(out)
 	return out
+}
+
+// upload posts data as the multipart field "file", the way the import page does.
+func (c *client) upload(path, token, filename string, data []byte) response {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("file", filename)
+	require.NoError(c.t, err)
+	_, _ = part.Write(data)
+	require.NoError(c.t, mw.Close())
+	return c.raw("POST", path, token, mw.FormDataContentType(), buf.String())
+}
+
+// xlsxFile builds a workbook in memory.
+func xlsxFile(t *testing.T, fill func(f *excelize.File)) []byte {
+	t.Helper()
+	f := excelize.NewFile()
+	defer f.Close()
+	fill(f)
+	var buf bytes.Buffer
+	require.NoError(t, f.Write(&buf))
+	return buf.Bytes()
 }

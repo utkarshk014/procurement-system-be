@@ -14,6 +14,9 @@ type Usecase interface {
 	// Validate is a dry run of Create.
 	Validate(ctx context.Context, in Input) (*Institution, error)
 	Create(ctx context.Context, in Input) (*Institution, error)
+	// Import checks every data row of a sheet (the first row is the header) and, unless dryRun,
+	// saves all the rows that pass together; rows with problems are reported and skipped.
+	Import(ctx context.Context, rows [][]string, dryRun bool) (*ImportReport, error)
 }
 
 // Repository talks to pms.mst_inst and the DBA's validate function and insert procedure.
@@ -29,4 +32,11 @@ type Repository interface {
 	CheckWithFunction(ctx context.Context, in *Institution) (*FunctionResult, error)
 	// Create checks the codes are free, re-runs the DBA check and inserts, under one lock.
 	Create(ctx context.Context, in *Institution) error
+	// ExistingCodes returns every ACM code and every reg code in use, each mapped to its ACM code.
+	ExistingCodes(ctx context.Context) (codes, regCodes map[string]string, err error)
+	// CheckManyWithFunction runs pms.fn_mst_inst_validate for every row in one round trip.
+	CheckManyWithFunction(ctx context.Context, rows []Institution) ([]FunctionResult, error)
+	// CreateMany saves every row in one transaction under the create lock, after checking again
+	// that no code was taken and that the DBA's check still passes; nothing is saved otherwise.
+	CreateMany(ctx context.Context, rows []Institution) error
 }

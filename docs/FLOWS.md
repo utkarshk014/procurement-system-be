@@ -291,7 +291,7 @@ DBA's `mst_*_validate` and `mst_*_insert`, and a lock per table.
 | Tax details form | `GET /company/tax-details` (404 = empty form); `comm_mail_pwd_set` drives a "password saved — change?" field; send `comm_mail_pwd` only when typed |
 | Trusts page | `GET /trusts` (list), `POST /trusts` (add), `PUT /trusts/{code}` (edit; code read-only), `DELETE /trusts/{code}` (409 with the DBA's reason while in use), `GET /financial-years` for the year dropdown; 409s carry `fields` for `trust_code` / `trust_desc` |
 | Places / branches / regions | `GET /places` (list), `POST /places` (add), `DELETE /places/{code}` (204, or 409 with the DBA's reason while an institution uses it); same for `/branches`, `/regions`; no edit yet |
-| Institutions | `GET /institutions?trust_code=&branch_code=&place_code=&q=&page=` (paged), `GET /institutions/next-code` to pre-fill codes, `POST /institutions` (add), `GET /institutions/{code}` (details); no edit yet |
+| Institutions | `GET /institutions?trust_code=&branch_code=&place_code=&q=&page=` (paged), `GET /institutions/next-code` to pre-fill codes, `POST /institutions` (add), `GET /institutions/{code}` (details); no edit yet; Excel import: `GET /institutions/import/template`, then `POST /institutions/import?dry_run=true` to preview and `POST /institutions/import` to save the ready rows |
 | Token expired | Any `401` → `POST /auth/refresh` once and retry; if that 401s, go to login |
 | Field errors | `error.fields[]` → show `message` under the input named `field` |
 | Support | Every response has `X-Request-Id`; errors include `request_id` |
