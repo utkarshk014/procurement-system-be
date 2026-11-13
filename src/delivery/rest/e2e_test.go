@@ -669,7 +669,10 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	t.Run("places, branches and regions: list, create, duplicates, rules", func(t *testing.T) {
-		for _, l := range []struct{ path, label string }{{"places", "Place"}, {"branches", "Branch"}, {"regions", "Region"}} {
+		for _, l := range []struct{ path, label string }{
+			{"places", "Place"}, {"branches", "Branch"}, {"regions", "Region"},
+			{"item-groups", "Item group"}, {"item-categories", "Category"}, {"manufacturers", "Manufacturer"},
+		} {
 			base := "/api/v1/" + l.path + "/"
 			empty := api.do("GET", base, esis, nil)
 			require.Equal(t, 200, empty.status, empty.body)
@@ -878,7 +881,7 @@ func TestEndToEnd(t *testing.T) {
 		inUse("/api/v1/branches/MYS", "Cannot delete! Branch code is already used in Institution Master (mst_inst)")
 		inUse("/api/v1/regions/MYS", "Cannot delete! Region code is already used in Institution Master (mst_inst)")
 		inUse("/api/v1/trusts/SAT", "Cannot delete! Trust code is already used in Institution Master (mst_inst)")
-		for _, l := range []string{"places", "branches", "regions"} {
+		for _, l := range []string{"places", "branches", "regions", "item-groups", "item-categories", "manufacturers"} {
 			gone("/api/v1/"+l+"/rac", "/api/v1/"+l+"/RAC")
 		}
 		assert.Equal(t, 404, del("/api/v1/places/M1S").status, "a bad code never reaches the DB")
@@ -1282,6 +1285,7 @@ func legacyScripts() []string {
 		filepath.Join(dir, "002_form5_objects.sql"),
 		filepath.Join(dir, "003_local_fixes.sql"),
 		filepath.Join(dir, "004_delete_objects.sql"),
+		filepath.Join(dir, "005_stock_masters_PROPOSED.sql"),
 	}
 }
 

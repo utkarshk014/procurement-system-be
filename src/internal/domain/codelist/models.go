@@ -1,5 +1,6 @@
-// Package domain_codelist is Form 5's three small code lists: places, branches and regions.
-// They share one shape (a 3-letter code and a unique name), so one implementation serves all three.
+// Package domain_codelist is the small code lists: Form 5's places, branches and regions, and
+// the stock masters item groups, categories and manufacturers. They share one shape (a 3-letter
+// code and a unique name), so one implementation serves them all.
 package domain_codelist
 
 import (
@@ -40,9 +41,21 @@ var (
 	Region = Kind{Label: "Region", Plural: "regions", Table: "pms.mst_region", CodeCol: "regn_code", NameCol: "regn_name",
 		Insert: "pms.mst_region_insert", Validate: "pms.mst_region_validate",
 		Delete: "pms.mst_region_delete", CanDelete: "pms.mst_region_validate_delete"}
+
+	// Stock masters (the old desktop screens Group, Category and Manufacturer). Their objects are
+	// our PROPOSED text in db/legacy/005_stock_masters_PROPOSED.sql until the DBA installs them.
+	ItemGroup = Kind{Label: "Item group", Plural: "item groups", Table: "pms.mst_item_group", CodeCol: "grp_code", NameCol: "grp_name",
+		Insert: "pms.mst_item_group_insert", Validate: "pms.mst_item_group_validate",
+		Delete: "pms.mst_item_group_delete", CanDelete: "pms.mst_item_group_validate_delete"}
+	Category = Kind{Label: "Category", Plural: "categories", Table: "pms.mst_item_category", CodeCol: "cat_code", NameCol: "cat_name",
+		Insert: "pms.mst_item_category_insert", Validate: "pms.mst_item_category_validate",
+		Delete: "pms.mst_item_category_delete", CanDelete: "pms.mst_item_category_validate_delete"}
+	Manufacturer = Kind{Label: "Manufacturer", Plural: "manufacturers", Table: "pms.mst_manufacturer", CodeCol: "mfr_code", NameCol: "mfr_name",
+		Insert: "pms.mst_manufacturer_insert", Validate: "pms.mst_manufacturer_validate",
+		Delete: "pms.mst_manufacturer_delete", CanDelete: "pms.mst_manufacturer_validate_delete"}
 )
 
-// Entry is one row of a list. The JSON is the same for all three lists.
+// Entry is one row of a list. The JSON is the same for every list.
 type Entry struct {
 	Code      string     `json:"code"`
 	Name      string     `json:"name"`
@@ -50,7 +63,8 @@ type Entry struct {
 	UpdatedAt *time.Time `json:"last_update_at,omitempty"`
 }
 
-// Input is the body of POST /places (/branches, /regions) and their /validate.
+// Input is the body of POST /places (/branches, /regions, /item-groups, /item-categories,
+// /manufacturers) and their /validate.
 type Input struct {
 	Code string `json:"code" validate:"required"`
 	Name string `json:"name" validate:"required,max=250"`

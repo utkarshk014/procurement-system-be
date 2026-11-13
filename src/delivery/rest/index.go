@@ -66,6 +66,9 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 	routers.SetCodeListRoute(r, "places", auth, controllers_codelist.NewCodeListController(usecases.Places, logger), logger)
 	routers.SetCodeListRoute(r, "branches", auth, controllers_codelist.NewCodeListController(usecases.Branches, logger), logger)
 	routers.SetCodeListRoute(r, "regions", auth, controllers_codelist.NewCodeListController(usecases.Regions, logger), logger)
+	routers.SetCodeListRoute(r, "item-groups", auth, controllers_codelist.NewCodeListController(usecases.ItemGroups, logger), logger)
+	routers.SetCodeListRoute(r, "item-categories", auth, controllers_codelist.NewCodeListController(usecases.Categories, logger), logger)
+	routers.SetCodeListRoute(r, "manufacturers", auth, controllers_codelist.NewCodeListController(usecases.Manufacturers, logger), logger)
 	routers.SetInstitutionRoutes(r, auth, controllers_institution.NewInstitutionController(usecases, logger), logger)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {

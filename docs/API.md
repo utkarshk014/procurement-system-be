@@ -74,6 +74,7 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | POST | `/api/v1/places/validate` (and the other two) | tenant_admin | Dry-run a create |
 | POST | `/api/v1/places` (and the other two) | tenant_admin | Add a row (201) |
 | DELETE | `/api/v1/places/{code}` (and the other two) | tenant_admin | Delete a row no institution uses (204) |
+| GET · POST · DELETE | `/api/v1/item-groups` · `/item-categories` · `/manufacturers` | tenant_admin | Stock masters: the same five routes as places (**PROPOSED** DBA objects, see below) |
 | GET | `/api/v1/institutions` | tenant_admin | One page of institutions, filtered, sorted by full code |
 | GET | `/api/v1/institutions/{code}` | tenant_admin | One institution by ACM code (404 if unknown) |
 | GET | `/api/v1/institutions/next-code` | tenant_admin | Suggested next ACM and reg codes |
@@ -433,6 +434,28 @@ then one locked transaction re-checks and calls his insert procedure.
 | `POST /places/validate` | `200 { "valid": true, "entry": {…} }` | `409` · `422` |
 | `POST /places` | `201` the row | `409` · `422` |
 | `DELETE /places/{code}` | `204` | `404` · `409` with the DBA's message while an institution uses it |
+
+---
+
+## Item groups, categories, manufacturers (tenant_admin, stock masters)
+
+> **Not usable on live yet.** The tables and procedures are our proposal
+> (`db/legacy/005_stock_masters_PROPOSED.sql`), waiting for the DBA to review and install.
+> Until then these routes return `500` on live.
+
+The old desktop screens *Group* (stock group), *Category* and *Manufacturer*. Each is a
+code list exactly like places: same object, body, rules, status codes and routes, at
+`/api/v1/item-groups`, `/api/v1/item-categories` and `/api/v1/manufacturers`.
+
+| List | Table | DBA messages start with |
+|---|---|---|
+| Item groups | `pms.mst_item_group` (`grp_code`, `grp_name`) | `Item group code…` / `Item group name…` |
+| Categories | `pms.mst_item_category` (`cat_code`, `cat_name`) | `Category code…` / `Category name…` |
+| Manufacturers | `pms.mst_manufacturer` (`mfr_code`, `mfr_name`) | `Manufacturer code…` / `Manufacturer name…` |
+
+Names are unique ignoring case, so `SNACK` blocks `Snack` (the old lists hold both
+spellings). No item master exists yet, so any row can be deleted; once items use these
+codes, a delete of a code in use will be a `409`.
 
 ---
 

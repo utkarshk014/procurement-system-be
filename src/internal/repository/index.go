@@ -32,6 +32,9 @@ type Repositories struct {
 	Places        domain_codelist.Repository
 	Branches      domain_codelist.Repository
 	Regions       domain_codelist.Repository
+	ItemGroups    domain_codelist.Repository
+	Categories    domain_codelist.Repository
+	Manufacturers domain_codelist.Repository
 	Institution   domain_institution.Repository
 }
 
@@ -47,6 +50,9 @@ func NewRepositories(dbm *database.Manager) *Repositories {
 		Places:        repository_codelist.NewPostgresCodeListRepository(dbm, domain_codelist.Place),
 		Branches:      repository_codelist.NewPostgresCodeListRepository(dbm, domain_codelist.Branch),
 		Regions:       repository_codelist.NewPostgresCodeListRepository(dbm, domain_codelist.Region),
+		ItemGroups:    repository_codelist.NewPostgresCodeListRepository(dbm, domain_codelist.ItemGroup),
+		Categories:    repository_codelist.NewPostgresCodeListRepository(dbm, domain_codelist.Category),
+		Manufacturers: repository_codelist.NewPostgresCodeListRepository(dbm, domain_codelist.Manufacturer),
 		Institution:   repository_institution.NewPostgresInstitutionRepository(dbm),
 	}
 }
