@@ -9,6 +9,8 @@
 --    full code is inst_code ':' inst_reg_code = 7 + 1 + 6 = 14. With 9 no full code
 --    can ever be 14, so nothing could be saved. Changed to 7 in the table check, the
 --    procedure and the validate function.
+--    The DBA installed this validate function on live on 12 Nov 2026 (identical text);
+--    the table check and the procedure below are still local fixes until he confirms them.
 
 ALTER TABLE pms.mst_inst DROP CONSTRAINT chk_inst_code_length;
 ALTER TABLE pms.mst_inst ADD CONSTRAINT chk_inst_code_length CHECK (CHAR_LENGTH(inst_code) = 7);
