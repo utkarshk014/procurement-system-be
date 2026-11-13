@@ -38,6 +38,9 @@ type Usecases struct {
 	Places        domain_codelist.Usecase
 	Branches      domain_codelist.Usecase
 	Regions       domain_codelist.Usecase
+	ItemGroups    domain_codelist.Usecase
+	Categories    domain_codelist.Usecase
+	Manufacturers domain_codelist.Usecase
 	Institution   domain_institution.Usecase
 }
 
@@ -58,6 +61,9 @@ func NewUsecases(cfg *utils.Config, repos *repository.Repositories, databases do
 		Places:        usecase_codelist.NewCodeListUsecase(domain_codelist.Place, repos.Places, logger),
 		Branches:      usecase_codelist.NewCodeListUsecase(domain_codelist.Branch, repos.Branches, logger),
 		Regions:       usecase_codelist.NewCodeListUsecase(domain_codelist.Region, repos.Regions, logger),
+		ItemGroups:    usecase_codelist.NewCodeListUsecase(domain_codelist.ItemGroup, repos.ItemGroups, logger),
+		Categories:    usecase_codelist.NewCodeListUsecase(domain_codelist.Category, repos.Categories, logger),
+		Manufacturers: usecase_codelist.NewCodeListUsecase(domain_codelist.Manufacturer, repos.Manufacturers, logger),
 		Institution: usecase_institution.NewInstitutionUsecase(repos.Institution, usecase_institution.Lookups{
 			Trusts: repos.Trust, Places: repos.Places, Branches: repos.Branches, Regions: repos.Regions,
 			FinYears: repos.FinancialYear,

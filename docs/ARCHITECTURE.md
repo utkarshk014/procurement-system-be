@@ -228,6 +228,13 @@ local fixes** we sent the DBA (`delete_fixes.sql`): `finyr_master_validate_delet
 (`IS NU+I6LL`) and did not install, and both region objects used `region_code` instead of
 `regn_code`.
 
+`005_stock_masters_PROPOSED.sql` is **our proposal, not on live**: the stock masters item
+group, category and manufacturer (the old desktop screens Uncle sent on 12 Nov), in the
+shape of `mst_place` with two changes: the code must be 3 capital letters (a `CHECK`), and
+the name is unique ignoring case and outer spaces (a unique index on `LOWER(TRIM(name))`,
+so even two saves at the same moment cannot store `SNACK` and `Snack`). The API serves
+them through the code-list module (`domain_codelist.ItemGroup`, `Category`, `Manufacturer`).
+
 ## 6. Setup wizard
 
 The walkthrough's wizard, in order. `GET /setup/status` returns `next_step`.
@@ -370,7 +377,8 @@ His "does not exist" is a `404`; any other refusal (*Cannot delete! … already 
 is a `409` carrying his message, and a foreign key that still points at the row is a `409`
 too. Financial years add one rule of ours inside the lock: the current year cannot be
 deleted (it would leave no year current). Routes: `DELETE /financial-years/{finyr}`,
-`/trusts/{code}`, `/places/{code}`, `/branches/{code}`, `/regions/{code}`. CORS allows
+`/trusts/{code}`, `/places/{code}`, `/branches/{code}`, `/regions/{code}`, `/item-groups/{code}`,
+`/item-categories/{code}`, `/manufacturers/{code}`. CORS allows
 `DELETE`. Institutions have no delete procedure yet.
 
 ## 12. Errors
@@ -418,3 +426,4 @@ only place that maps them to HTTP.
 20. Form 5, what is `reg_date`? Built: defaults to today, never in the future. Which fields are mandatory? Built: trust, codes, name, place, branch, start year.
 21. Form 5, `mst_branch` and `mst_inst` have no `last_update_at` trigger (place and region do).
 22. Deletes (v1.2, 11 Nov): four objects need the fixed text in `delete_fixes.sql` before they work on live: `finyr_master_validate_delete` (reads a missing `company_master.finyr`), `mst_place_validate_delete` (typo, does not install), `mst_region_delete` and `mst_region_validate_delete` (`region_code` → `regn_code`). Until then, deleting a financial year, place or region on live fails.
+23. Stock masters (12 Nov screens): we wrote `005_stock_masters_PROPOSED.sql` (item group, category, manufacturer: table, insert, validate, delete, delete check, update trigger). Uncle to review and install. Questions: do these lists need a code at all (the old screens show only a name), and is 3 letters right; should a category belong to a group; do they need an edit procedure (the old screens have Edit)?

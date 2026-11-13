@@ -107,7 +107,8 @@ func SetTrustRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers
 	})
 }
 
-// SetCodeListRoute: one of Form 5's code lists (/places, /branches, /regions), tenant admins only.
+// SetCodeListRoute: one code list (/places, /branches, /regions, /item-groups, /item-categories,
+// /manufacturers), tenant admins only.
 // There is no update: the DBA has given insert and delete procedures only.
 func SetCodeListRoute(r chi.Router, path string, auth middlewares.AuthMiddleware, c controllers_codelist.CodeListController, logger *slog.Logger) {
 	r.Route("/api/v1/"+path, func(r chi.Router) {
