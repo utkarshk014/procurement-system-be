@@ -45,7 +45,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	pg, err := tcpostgres.Run(ctx, "postgres:11-alpine",
+	pg, err := tcpostgres.Run(ctx, e2eImage(),
 		tcpostgres.WithDatabase("esispms"),
 		tcpostgres.WithUsername("pms"),
 		tcpostgres.WithPassword("pms"),
@@ -1274,8 +1274,22 @@ func createTenantDatabase(t *testing.T, ctx context.Context, dsn, name string) s
 	return other
 }
 
+// e2eImage is the Postgres the test runs on: live is Postgres 16 since 14 Nov 2026.
+// E2E_PG_IMAGE overrides it, e.g. postgres:11-alpine.
+func e2eImage() string {
+	if img := os.Getenv("E2E_PG_IMAGE"); img != "" {
+		return img
+	}
+	return "postgres:16-alpine"
+}
+
 // legacyScripts are the DBA's objects plus our marked local fixes, in the order Postgres runs them.
+// E2E_SCHEMA_FILES (comma-separated paths) replaces them, e.g. with a pg_dump -s of the live
+// schema, to see what the app does against exactly what is installed there.
 func legacyScripts() []string {
+	if files := os.Getenv("E2E_SCHEMA_FILES"); files != "" {
+		return strings.Split(files, ",")
+	}
 	dir := filepath.Join("..", "..", "..", "db", "legacy")
 	return []string{
 		filepath.Join(dir, "001_pms_objects.sql"),
