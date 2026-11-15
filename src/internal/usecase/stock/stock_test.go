@@ -160,6 +160,13 @@ func TestFunctionErrorsMapToFields(t *testing.T) {
 		{domain_stock.ItemFunctionError("Invalid UOM code: 7"), "uom_cd", domain.KindValidation},
 		{domain_stock.ItemFunctionError("Service items cannot be consumable, spare or serial tracked"), "goods_service_item", domain.KindValidation},
 		{domain_stock.UOMFunctionError("Standard UOM name already exists: Numbers"), "uom_as_standard", domain.KindConflict},
+		// fn_validate_mst_stk_items's wording (15 Nov evening).
+		{domain_stock.ItemFunctionError("Item description already exists"), "item_desc", domain.KindConflict},
+		{domain_stock.ItemFunctionError("Item code already exists"), "item_code", domain.KindConflict},
+		{domain_stock.ItemFunctionError("Invalid stock category"), "cat_cd", domain.KindValidation},
+		{domain_stock.ItemFunctionError("Invalid manufacturer"), "manf_cd", domain.KindValidation},
+		{domain_stock.ItemFunctionError("Invalid unit of measurement"), "uom_cd", domain.KindValidation},
+		{domain_stock.ItemFunctionError("Service cannot be consumable, spare or serial tracked"), "goods_service_item", domain.KindValidation},
 		{domain_stock.UOMFunctionError("Number of decimals must be between 1 and 9"), "number_decimal", domain.KindValidation},
 	}
 	for _, c := range cases {
@@ -171,4 +178,5 @@ func TestFunctionErrorsMapToFields(t *testing.T) {
 	}
 	assert.Equal(t, domain_stock.ErrItemNotFound, domain_stock.ItemFunctionError("Stock item record not found"))
 	assert.Equal(t, domain_stock.ErrItemNotFound, domain_stock.ItemFunctionError("Item code 7 does not exist"), "the update procedure's not-found")
+	assert.Equal(t, domain_stock.ErrItemNotFound, domain_stock.ItemFunctionError("Item code not found for update"), "the validate function's not-found")
 }
