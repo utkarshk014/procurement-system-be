@@ -203,6 +203,20 @@ func (r *itemRepository) Create(ctx context.Context, it *domain_stock.Item) (int
 	return id, err
 }
 
+// ErrItemHasStock is the 409 for an item that has been bought or holds stock.
+var ErrItemHasStock = domain.Conflict("Cannot delete! Item has stock or purchase records")
+
+// itemHasStockSQL is true when the item's stock row records a purchase or any stock movement.
+// FOR UPDATE locks that row, so nothing records a movement before the delete commits.
+const itemHasStockSQL = `
+	SELECT EXISTS (
+		SELECT 1 FROM pms.mst_stk_items_transactions
+		WHERE item_cd = $1
+		  AND (last_purchase_date IS NOT NULL
+		       OR COALESCE(stk_ob, 0) <> 0 OR COALESCE(stk_cr, 0) <> 0 OR COALESCE(stk_db, 0) <> 0
+		       OR COALESCE(stk_cr_jv, 0) <> 0 OR COALESCE(stk_db_jv, 0) <> 0 OR COALESCE(stk_cb, 0) <> 0)
+		FOR UPDATE)`
+
 // Delete calls the DBA's delete procedure under the items lock. "record not found" is a 404; a
 // foreign key still pointing at the item (its stock row, until the DBA's procedure removes it)
 // is a 409.
@@ -214,6 +228,16 @@ func (r *itemRepository) Delete(ctx context.Context, id int64) error {
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := lock(ctx, tx, itemsTable); err != nil {
 			return err
+		}
+		// Our own guard, whatever delete procedure live has: an item that has been bought or holds
+		// stock must stay, or its history is lost. The stock row is locked so nothing records a
+		// movement between this check and the delete.
+		var hasStock bool
+		if err := tx.QueryRow(ctx, itemHasStockSQL, id).Scan(&hasStock); err != nil {
+			return domain.Internal("Could not check the item's stock", err)
+		}
+		if hasStock {
+			return ErrItemHasStock
 		}
 		if _, err := tx.Exec(ctx, `CALL pms.delete_mst_stk_items($1::integer)`, id); err != nil {
 			if msg, ok := raised(err); ok {
