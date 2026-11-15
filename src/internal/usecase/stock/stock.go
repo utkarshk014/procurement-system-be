@@ -241,12 +241,19 @@ func (uc *uomUsecase) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// PrepareUOM upper-cases the unit, tidies the standard name and checks the decimals: off means
+// PrepareUOM upper-cases the unit, matches the standard name to the GST unit code list and checks the decimals: off means
 // 0 decimals; on needs 1 to 9 (0 decimals with decimals on would mean nothing).
 func PrepareUOM(in domain_stock.UOMInput) (*domain_stock.UOM, error) {
 	in.UOM = strings.ToUpper(strings.TrimSpace(in.UOM))
 	in.Standard = domain_stock.NormalizeName(in.Standard)
 	fields := usecase_common.ToFieldErrors(validation.Struct(in))
+	if in.Standard != "" {
+		if std, ok := domain_stock.StandardUQC(in.Standard); ok {
+			in.Standard = std
+		} else {
+			fields = append(fields, domain.FieldError{Field: "uom_as_standard", Message: "must be a GST unit code from the list, e.g. NOS-NUMBERS"})
+		}
+	}
 	if in.UOM != "" && strings.ContainsAny(in.UOM, " \t") {
 		fields = append(fields, domain.FieldError{Field: "uom", Message: "must not contain spaces"})
 	}

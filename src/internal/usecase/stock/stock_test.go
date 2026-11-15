@@ -35,11 +35,11 @@ func TestPrepareName(t *testing.T) {
 }
 
 func TestPrepareUOM(t *testing.T) {
-	u, err := PrepareUOM(domain_stock.UOMInput{UOM: " kg ", Standard: " Kilo  grams ", EnableDecimal: true, NumberDecimal: n(3)})
+	u, err := PrepareUOM(domain_stock.UOMInput{UOM: " kg ", Standard: " kgs-kilograms ", EnableDecimal: true, NumberDecimal: n(3)})
 	require.NoError(t, err)
-	assert.Equal(t, domain_stock.UOM{UOM: "KG", Standard: "Kilo grams", EnableDecimal: true, NumberDecimal: 3}, *u)
+	assert.Equal(t, domain_stock.UOM{UOM: "KG", Standard: "KGS-KILOGRAMS", EnableDecimal: true, NumberDecimal: 3}, *u)
 
-	u, err = PrepareUOM(domain_stock.UOMInput{UOM: "nos", Standard: "Numbers"})
+	u, err = PrepareUOM(domain_stock.UOMInput{UOM: "nos", Standard: "NOS-NUMBERS"})
 	require.NoError(t, err)
 	assert.Equal(t, 0, u.NumberDecimal, "decimals off means 0")
 
@@ -48,14 +48,14 @@ func TestPrepareUOM(t *testing.T) {
 		field string
 		msg   string
 	}{
-		{domain_stock.UOMInput{Standard: "x"}, "uom", "is required"},
-		{domain_stock.UOMInput{UOM: "LITRES", Standard: "x"}, "uom", "must be at most 5 characters"},
-		{domain_stock.UOMInput{UOM: "K G", Standard: "x"}, "uom", "must not contain spaces"},
+		{domain_stock.UOMInput{Standard: "NOS-NUMBERS"}, "uom", "is required"},
+		{domain_stock.UOMInput{UOM: "LITRES", Standard: "NOS-NUMBERS"}, "uom", "must be at most 5 characters"},
+		{domain_stock.UOMInput{UOM: "K G", Standard: "NOS-NUMBERS"}, "uom", "must not contain spaces"},
 		{domain_stock.UOMInput{UOM: "KG"}, "uom_as_standard", "is required"},
-		{domain_stock.UOMInput{UOM: "KG", Standard: "x", NumberDecimal: n(2)}, "number_decimal", "must be 0 when decimals are off"},
-		{domain_stock.UOMInput{UOM: "KG", Standard: "x", EnableDecimal: true}, "number_decimal", "is required when decimals are on"},
-		{domain_stock.UOMInput{UOM: "KG", Standard: "x", EnableDecimal: true, NumberDecimal: n(0)}, "number_decimal", "must be from 1 to 9"},
-		{domain_stock.UOMInput{UOM: "KG", Standard: "x", EnableDecimal: true, NumberDecimal: n(10)}, "number_decimal", "must be from 1 to 9"},
+		{domain_stock.UOMInput{UOM: "KG", Standard: "NOS-NUMBERS", NumberDecimal: n(2)}, "number_decimal", "must be 0 when decimals are off"},
+		{domain_stock.UOMInput{UOM: "KG", Standard: "NOS-NUMBERS", EnableDecimal: true}, "number_decimal", "is required when decimals are on"},
+		{domain_stock.UOMInput{UOM: "KG", Standard: "NOS-NUMBERS", EnableDecimal: true, NumberDecimal: n(0)}, "number_decimal", "must be from 1 to 9"},
+		{domain_stock.UOMInput{UOM: "KG", Standard: "NOS-NUMBERS", EnableDecimal: true, NumberDecimal: n(10)}, "number_decimal", "must be from 1 to 9"},
 	}
 	for _, c := range cases {
 		_, err := PrepareUOM(c.in)
