@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -16,9 +17,9 @@ import (
 	"github.com/utkarshk014/procurement-system-be/src/internal/repository/pgutil"
 )
 
-// lock serialises every write to one table, so the duplicate checks and the insert see the
-// same rows. The DBA's tables have no unique constraints at all, so this is the only guard
-// against two saves of the same name at the same moment.
+// lock serialises every write to one table, so the duplicate checks and the write see the same
+// rows. The DBA's tables have no unique constraints, so this is the only guard against two saves
+// of the same name at the same moment.
 func lock(ctx context.Context, tx pgx.Tx, table string) error {
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, table); err != nil {
 		return domain.Internal("Could not lock "+table, err)
@@ -47,6 +48,22 @@ func raised(err error) (string, bool) {
 func isForeignKeyViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
+// deleteError maps a failed CALL of the DBA's delete procedure. His procedures run their own
+// check first and RAISE its message: "… does not exist" is notFound, any other refusal ("Cannot
+// delete. Stock items are linked …", "… changed before deletion") is a 409 carrying his words.
+func deleteError(err error, what string, notFound error) error {
+	if msg, ok := raised(err); ok {
+		if strings.Contains(strings.ToLower(msg), "does not exist") {
+			return notFound
+		}
+		return domain.Conflict(strings.TrimSpace(msg))
+	}
+	if isForeignKeyViolation(err) {
+		return domain.Conflict("Cannot delete! " + what + " is still in use")
+	}
+	return domain.Internal("Could not delete "+strings.ToLower(what), err)
 }
 
 // sameName compares names ignoring case and runs of spaces, as we store them.
@@ -103,8 +120,13 @@ func (r *listRepository) Get(ctx context.Context, id int64) (*domain_stock.Entry
 	if err != nil {
 		return nil, err
 	}
+	return r.get(ctx, pool, id, "")
+}
+
+// get reads one row; suffix may add FOR UPDATE inside a transaction.
+func (r *listRepository) get(ctx context.Context, q pgutil.Querier, id int64, suffix string) (*domain_stock.Entry, error) {
 	e := &domain_stock.Entry{}
-	if err := scanEntry(pool.QueryRow(ctx, r.selectSQL()+` WHERE `+r.list.IDCol+` = $1`, id), e); err != nil {
+	if err := scanEntry(q.QueryRow(ctx, r.selectSQL()+` WHERE `+r.list.IDCol+` = $1`+suffix, id), e); err != nil {
 		if pgutil.IsNoRows(err) {
 			return nil, r.list.NotFound()
 		}
@@ -113,18 +135,18 @@ func (r *listRepository) Get(ctx context.Context, id int64) (*domain_stock.Entry
 	return e, nil
 }
 
-func (r *listRepository) NameTaken(ctx context.Context, name string) (int64, bool, error) {
+func (r *listRepository) NameTaken(ctx context.Context, name string, exceptID int64) (int64, bool, error) {
 	pool, err := pgutil.TenantPool(ctx, r.pools)
 	if err != nil {
 		return 0, false, err
 	}
-	return r.nameTaken(ctx, pool, name)
+	return r.nameTaken(ctx, pool, name, exceptID)
 }
 
-func (r *listRepository) nameTaken(ctx context.Context, q pgutil.Querier, name string) (int64, bool, error) {
+func (r *listRepository) nameTaken(ctx context.Context, q pgutil.Querier, name string, exceptID int64) (int64, bool, error) {
 	var id int64
 	err := q.QueryRow(ctx, `SELECT `+r.list.IDCol+` FROM `+r.list.Table+` WHERE `+sameName(r.list.NameCol)+
-		` ORDER BY `+r.list.IDCol+` LIMIT 1`, name).Scan(&id)
+		` AND `+r.list.IDCol+` <> $2 ORDER BY `+r.list.IDCol+` LIMIT 1`, name, exceptID).Scan(&id)
 	switch {
 	case err == nil:
 		return id, true, nil
@@ -135,22 +157,38 @@ func (r *listRepository) nameTaken(ctx context.Context, q pgutil.Querier, name s
 	}
 }
 
-func (r *listRepository) CheckWithFunction(ctx context.Context, name string) (*domain_stock.FunctionResult, error) {
+func (r *listRepository) CheckWithFunction(ctx context.Context, id int64, name string) (*domain_stock.FunctionResult, error) {
 	pool, err := pgutil.TenantPool(ctx, r.pools)
 	if err != nil {
 		return nil, err
 	}
-	return r.checkWithFunction(ctx, pool, name)
+	return r.checkWithFunction(ctx, pool, id, name)
 }
 
-// checkWithFunction passes id 0: the DBA's functions treat 0 as a new row.
-func (r *listRepository) checkWithFunction(ctx context.Context, q pgutil.Querier, name string) (*domain_stock.FunctionResult, error) {
+func (r *listRepository) checkWithFunction(ctx context.Context, q pgutil.Querier, id int64, name string) (*domain_stock.FunctionResult, error) {
 	res := &domain_stock.FunctionResult{}
-	if err := q.QueryRow(ctx, `SELECT is_valid, message FROM `+r.list.Validate+`(0, $1::varchar)`, name).
+	if err := q.QueryRow(ctx, `SELECT is_valid, message FROM `+r.list.Validate+`($1::integer, $2::varchar)`, id, name).
 		Scan(&res.Valid, &res.Message); err != nil {
 		return nil, domain.Internal("Could not run "+r.list.Label+" validation", err)
 	}
 	return res, nil
+}
+
+// checkAll runs, inside the lock, everything a save needs: a free name, then the DBA's check.
+func (r *listRepository) checkAll(ctx context.Context, tx pgx.Tx, id int64, name string) error {
+	if other, taken, err := r.nameTaken(ctx, tx, name, id); err != nil {
+		return err
+	} else if taken {
+		return r.list.NameTaken(other)
+	}
+	res, err := r.checkWithFunction(ctx, tx, id, name)
+	if err != nil {
+		return err
+	}
+	if !res.Valid {
+		return r.list.FunctionError(res.Message)
+	}
+	return nil
 }
 
 func (r *listRepository) Create(ctx context.Context, name string) (int64, error) {
@@ -163,17 +201,8 @@ func (r *listRepository) Create(ctx context.Context, name string) (int64, error)
 		if err := lock(ctx, tx, r.list.Table); err != nil {
 			return err
 		}
-		if other, taken, err := r.nameTaken(ctx, tx, name); err != nil {
+		if err := r.checkAll(ctx, tx, 0, name); err != nil {
 			return err
-		} else if taken {
-			return r.list.NameTaken(other)
-		}
-		res, err := r.checkWithFunction(ctx, tx, name)
-		if err != nil {
-			return err
-		}
-		if !res.Valid {
-			return r.list.FunctionError(res.Message)
 		}
 		if _, err := tx.Exec(ctx, `CALL `+r.list.Insert+`($1::varchar)`, name); err != nil {
 			if msg, ok := raised(err); ok {
@@ -185,6 +214,56 @@ func (r *listRepository) Create(ctx context.Context, name string) (int64, error)
 		return err
 	})
 	return id, err
+}
+
+func (r *listRepository) Update(ctx context.Context, id int64, name string) error {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := lock(ctx, tx, r.list.Table); err != nil {
+			return err
+		}
+		if _, err := r.get(ctx, tx, id, " FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := r.checkAll(ctx, tx, id, name); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `CALL `+r.list.Update+`($1::integer, $2::varchar)`, id, name); err != nil {
+			if msg, ok := raised(err); ok {
+				if strings.Contains(msg, "does not exist") {
+					return r.list.NotFound()
+				}
+				return r.list.FunctionError(msg)
+			}
+			return domain.Internal("Could not save "+r.list.Label, err)
+		}
+		return nil
+	})
+}
+
+// Delete takes the table lock (items take their own, so an item saved at this moment still
+// meets the DBA's check or the foreign key), reads the stored name, then calls his procedure.
+func (r *listRepository) Delete(ctx context.Context, id int64) error {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := lock(ctx, tx, r.list.Table); err != nil {
+			return err
+		}
+		e, err := r.get(ctx, tx, id, " FOR UPDATE")
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `CALL `+r.list.Delete+`($1::integer, $2::varchar)`, id, e.Name); err != nil {
+			return deleteError(err, r.list.Label, r.list.NotFound())
+		}
+		return nil
+	})
 }
 
 // ---- Units of measurement
@@ -240,8 +319,12 @@ func (r *uomRepository) Get(ctx context.Context, id int64) (*domain_stock.UOM, e
 	if err != nil {
 		return nil, err
 	}
+	return r.get(ctx, pool, id, "")
+}
+
+func (r *uomRepository) get(ctx context.Context, q pgutil.Querier, id int64, suffix string) (*domain_stock.UOM, error) {
 	u := &domain_stock.UOM{}
-	if err := scanUOM(pool.QueryRow(ctx, selectUOM+` WHERE uom_cd = $1`, id), u); err != nil {
+	if err := scanUOM(q.QueryRow(ctx, selectUOM+` WHERE uom_cd = $1`+suffix, id), u); err != nil {
 		if pgutil.IsNoRows(err) {
 			return nil, domain_stock.ErrUOMNotFound
 		}
@@ -263,11 +346,12 @@ func (r *uomRepository) taken(ctx context.Context, q pgutil.Querier, u *domain_s
 	for _, c := range []struct{ field, col, value string }{
 		{"uom", "uom", u.UOM}, {"uom_as_standard", "uom_as_standard", u.Standard},
 	} {
-		var id int64
-		err := q.QueryRow(ctx, `SELECT uom_cd FROM pms.mst_stk_uom WHERE `+sameName(c.col)+` ORDER BY uom_cd LIMIT 1`, c.value).Scan(&id)
+		var other string
+		err := q.QueryRow(ctx, `SELECT COALESCE(uom, '') FROM pms.mst_stk_uom WHERE `+sameName(c.col)+
+			` AND uom_cd <> $2 ORDER BY uom_cd LIMIT 1`, c.value, u.ID).Scan(&other)
 		switch {
 		case err == nil:
-			out = append(out, domain.FieldError{Field: c.field, Message: "is already used by #" + strconv.FormatInt(id, 10)})
+			out = append(out, domain.FieldError{Field: c.field, Message: "is already used by " + other})
 		case !pgutil.IsNoRows(err):
 			return nil, domain.Internal("Could not check unit of measurement", err)
 		}
@@ -285,11 +369,29 @@ func (r *uomRepository) CheckWithFunction(ctx context.Context, u *domain_stock.U
 
 func (r *uomRepository) checkWithFunction(ctx context.Context, q pgutil.Querier, u *domain_stock.UOM) (*domain_stock.FunctionResult, error) {
 	res := &domain_stock.FunctionResult{}
-	if err := q.QueryRow(ctx, `SELECT is_valid, message FROM pms.fn_validate_mst_stk_uom(0, $1::varchar, $2::varchar, $3::boolean, $4::varchar)`,
-		u.UOM, u.Standard, u.EnableDecimal, strconv.Itoa(u.NumberDecimal)).Scan(&res.Valid, &res.Message); err != nil {
+	if err := q.QueryRow(ctx, `SELECT is_valid, message FROM pms.fn_validate_mst_stk_uom($1::integer, $2::varchar, $3::varchar, $4::boolean, $5::varchar)`,
+		u.ID, u.UOM, u.Standard, u.EnableDecimal, strconv.Itoa(u.NumberDecimal)).Scan(&res.Valid, &res.Message); err != nil {
 		return nil, domain.Internal("Could not run unit of measurement validation", err)
 	}
 	return res, nil
+}
+
+func (r *uomRepository) checkAll(ctx context.Context, tx pgx.Tx, u *domain_stock.UOM) error {
+	taken, err := r.taken(ctx, tx, u)
+	if err != nil {
+		return err
+	}
+	if len(taken) > 0 {
+		return domain.Conflict("Unit of measurement already exists", taken...)
+	}
+	res, err := r.checkWithFunction(ctx, tx, u)
+	if err != nil {
+		return err
+	}
+	if !res.Valid {
+		return domain_stock.UOMFunctionError(res.Message)
+	}
+	return nil
 }
 
 func (r *uomRepository) Create(ctx context.Context, u *domain_stock.UOM) (int64, error) {
@@ -302,19 +404,8 @@ func (r *uomRepository) Create(ctx context.Context, u *domain_stock.UOM) (int64,
 		if err := lock(ctx, tx, uomTable); err != nil {
 			return err
 		}
-		taken, err := r.taken(ctx, tx, u)
-		if err != nil {
+		if err := r.checkAll(ctx, tx, u); err != nil {
 			return err
-		}
-		if len(taken) > 0 {
-			return domain.Conflict("Unit of measurement already exists", taken...)
-		}
-		res, err := r.checkWithFunction(ctx, tx, u)
-		if err != nil {
-			return err
-		}
-		if !res.Valid {
-			return domain_stock.UOMFunctionError(res.Message)
 		}
 		if _, err := tx.Exec(ctx, `CALL pms.insert_mst_stk_uom($1::varchar, $2::varchar, $3::boolean, $4::varchar)`,
 			u.UOM, u.Standard, u.EnableDecimal, strconv.Itoa(u.NumberDecimal)); err != nil {
@@ -327,4 +418,53 @@ func (r *uomRepository) Create(ctx context.Context, u *domain_stock.UOM) (int64,
 		return err
 	})
 	return id, err
+}
+
+func (r *uomRepository) Update(ctx context.Context, u *domain_stock.UOM) error {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := lock(ctx, tx, uomTable); err != nil {
+			return err
+		}
+		if _, err := r.get(ctx, tx, u.ID, " FOR UPDATE"); err != nil {
+			return err
+		}
+		if err := r.checkAll(ctx, tx, u); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `CALL pms.update_mst_stk_uom($1::integer, $2::varchar, $3::varchar, $4::boolean, $5::varchar)`,
+			u.ID, u.UOM, u.Standard, u.EnableDecimal, strconv.Itoa(u.NumberDecimal)); err != nil {
+			if msg, ok := raised(err); ok {
+				if strings.Contains(msg, "does not exist") {
+					return domain_stock.ErrUOMNotFound
+				}
+				return domain_stock.UOMFunctionError(msg)
+			}
+			return domain.Internal("Could not save unit of measurement", err)
+		}
+		return nil
+	})
+}
+
+func (r *uomRepository) Delete(ctx context.Context, id int64) error {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := lock(ctx, tx, uomTable); err != nil {
+			return err
+		}
+		u, err := r.get(ctx, tx, id, " FOR UPDATE")
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `CALL pms.delete_mst_stk_uom($1::integer, $2::varchar)`, id, u.UOM); err != nil {
+			return deleteError(err, "Unit of measurement", domain_stock.ErrUOMNotFound)
+		}
+		return nil
+	})
 }

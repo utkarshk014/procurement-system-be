@@ -106,6 +106,7 @@ func TestPrepareItemRules(t *testing.T) {
 		msg   string
 	}{
 		{"no description", func(in *domain_stock.ItemInput) { in.Desc = " " }, "item_desc", "is required"},
+		{"no code", func(in *domain_stock.ItemInput) { in.Code = "  " }, "item_code", "is required"},
 		{"code with space", func(in *domain_stock.ItemInput) { in.Code = "LAY 50" }, "item_code", "may contain only letters, digits and - / ."},
 		{"long code", func(in *domain_stock.ItemInput) { in.Code = "ABCDEFGHIJKLMNOPQRSTU" }, "item_code", "must be at most 20 characters"},
 		{"no type", func(in *domain_stock.ItemInput) { in.Type = "" }, "goods_service_item", "is required"},
@@ -151,6 +152,15 @@ func TestFunctionErrorsMapToFields(t *testing.T) {
 		{domain_stock.ItemFunctionError("Item type must be Goods or Service"), "goods_service_item", domain.KindValidation},
 		{domain_stock.ItemFunctionError("Unit of measurement not found"), "uom_cd", domain.KindValidation},
 		{domain_stock.ItemFunctionError("GST must equal SGST plus CGST"), "gst_percentage", domain.KindValidation},
+		// The update procedure's wording (15 Nov).
+		{domain_stock.ItemFunctionError("Item code already exists: PEN-1"), "item_code", domain.KindConflict},
+		{domain_stock.ItemFunctionError("Item description already exists: Pen"), "item_desc", domain.KindConflict},
+		{domain_stock.ItemFunctionError("Item code cannot be empty"), "item_code", domain.KindValidation},
+		{domain_stock.ItemFunctionError("Invalid stock group code: 7"), "grp_cd", domain.KindValidation},
+		{domain_stock.ItemFunctionError("Invalid UOM code: 7"), "uom_cd", domain.KindValidation},
+		{domain_stock.ItemFunctionError("Service items cannot be consumable, spare or serial tracked"), "goods_service_item", domain.KindValidation},
+		{domain_stock.UOMFunctionError("Standard UOM name already exists: Numbers"), "uom_as_standard", domain.KindConflict},
+		{domain_stock.UOMFunctionError("Number of decimals must be between 1 and 9"), "number_decimal", domain.KindValidation},
 	}
 	for _, c := range cases {
 		app, ok := domain.AsAppError(c.err)
@@ -160,4 +170,5 @@ func TestFunctionErrorsMapToFields(t *testing.T) {
 		assert.Equal(t, c.field, app.Fields[0].Field, c.err.Error())
 	}
 	assert.Equal(t, domain_stock.ErrItemNotFound, domain_stock.ItemFunctionError("Stock item record not found"))
+	assert.Equal(t, domain_stock.ErrItemNotFound, domain_stock.ItemFunctionError("Item code 7 does not exist"), "the update procedure's not-found")
 }

@@ -3,7 +3,6 @@ package repository_stock
 import (
 	"context"
 	"strconv"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
@@ -111,7 +110,7 @@ func (r *itemRepository) problems(ctx context.Context, q pgutil.Querier, it *dom
 	// The DBA's procedure accepts duplicates; two items with one description or code would make
 	// every later purchase ambiguous.
 	var id int64
-	err = q.QueryRow(ctx, `SELECT item_cd FROM pms.mst_stk_items WHERE `+sameName("item_desc")+` ORDER BY item_cd LIMIT 1`, it.Desc).Scan(&id)
+	err = q.QueryRow(ctx, `SELECT item_cd FROM pms.mst_stk_items WHERE `+sameName("item_desc")+` AND item_cd <> $2 ORDER BY item_cd LIMIT 1`, it.Desc, it.ID).Scan(&id)
 	switch {
 	case err == nil:
 		taken = append(taken, domain.FieldError{Field: "item_desc", Message: "is already used by item #" + strconv.FormatInt(id, 10)})
@@ -119,7 +118,7 @@ func (r *itemRepository) problems(ctx context.Context, q pgutil.Querier, it *dom
 		return nil, nil, domain.Internal("Could not check item description", err)
 	}
 	if it.Code != "" {
-		err = q.QueryRow(ctx, `SELECT item_cd FROM pms.mst_stk_items WHERE UPPER(TRIM(item_code)) = $1 ORDER BY item_cd LIMIT 1`, it.Code).Scan(&id)
+		err = q.QueryRow(ctx, `SELECT item_cd FROM pms.mst_stk_items WHERE UPPER(TRIM(item_code)) = $1 AND item_cd <> $2 ORDER BY item_cd LIMIT 1`, it.Code, it.ID).Scan(&id)
 		switch {
 		case err == nil:
 			taken = append(taken, domain.FieldError{Field: "item_code", Message: "is already used by item #" + strconv.FormatInt(id, 10)})
@@ -154,11 +153,45 @@ func (r *itemRepository) CheckWithFunction(ctx context.Context, it *domain_stock
 
 func (r *itemRepository) checkWithFunction(ctx context.Context, q pgutil.Querier, it *domain_stock.Item) (*domain_stock.FunctionResult, error) {
 	res := &domain_stock.FunctionResult{}
-	if err := q.QueryRow(ctx, `SELECT is_valid, message FROM pms.fn_validate_mst_stk_items(0, `+itemTypes+`)`, args(it)...).
+	if err := q.QueryRow(ctx, `SELECT is_valid, message FROM pms.fn_validate_mst_stk_items($16::integer, `+itemTypes+`)`, append(args(it), it.ID)...).
 		Scan(&res.Valid, &res.Message); err != nil {
 		return nil, domain.Internal("Could not run item validation", err)
 	}
 	return res, nil
+}
+
+// checkAll runs, inside the lock, everything a save needs: links that exist, a free description
+// and code, then the DBA's check.
+func (r *itemRepository) checkAll(ctx context.Context, tx pgx.Tx, it *domain_stock.Item) error {
+	missing, taken, err := r.problems(ctx, tx, it)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return domain.Validation(missing...)
+	}
+	if len(taken) > 0 {
+		return domain.Conflict("Item already exists", taken...)
+	}
+	res, err := r.checkWithFunction(ctx, tx, it)
+	if err != nil {
+		return err
+	}
+	if !res.Valid {
+		return domain_stock.ItemFunctionError(res.Message)
+	}
+	return nil
+}
+
+// saveError maps a failed CALL of the DBA's insert or update procedure.
+func saveError(err error) error {
+	if msg, ok := raised(err); ok {
+		return domain_stock.ItemFunctionError(msg)
+	}
+	if isForeignKeyViolation(err) { // a linked row vanished after our check
+		return domain.Validation(domain.FieldError{Message: "A linked group, category, manufacturer or unit no longer exists"})
+	}
+	return domain.Internal("Could not save item", err)
 }
 
 func (r *itemRepository) Create(ctx context.Context, it *domain_stock.Item) (int64, error) {
@@ -166,36 +199,17 @@ func (r *itemRepository) Create(ctx context.Context, it *domain_stock.Item) (int
 	if err != nil {
 		return 0, err
 	}
+	it.ID = 0
 	var id int64
 	err = pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		if err := lock(ctx, tx, itemsTable); err != nil {
 			return err
 		}
-		missing, taken, err := r.problems(ctx, tx, it)
-		if err != nil {
+		if err := r.checkAll(ctx, tx, it); err != nil {
 			return err
-		}
-		if len(missing) > 0 {
-			return domain.Validation(missing...)
-		}
-		if len(taken) > 0 {
-			return domain.Conflict("Item already exists", taken...)
-		}
-		res, err := r.checkWithFunction(ctx, tx, it)
-		if err != nil {
-			return err
-		}
-		if !res.Valid {
-			return domain_stock.ItemFunctionError(res.Message)
 		}
 		if _, err := tx.Exec(ctx, `CALL pms.insert_mst_stk_items(`+itemTypes+`)`, args(it)...); err != nil {
-			if msg, ok := raised(err); ok {
-				return domain_stock.ItemFunctionError(msg)
-			}
-			if isForeignKeyViolation(err) { // a linked row vanished after our check
-				return domain.Validation(domain.FieldError{Message: "A linked group, category, manufacturer or unit no longer exists"})
-			}
-			return domain.Internal("Could not save item", err)
+			return saveError(err)
 		}
 		id, err = newID(ctx, tx, itemsTable, "item_cd")
 		return err
@@ -203,23 +217,35 @@ func (r *itemRepository) Create(ctx context.Context, it *domain_stock.Item) (int
 	return id, err
 }
 
-// ErrItemHasStock is the 409 for an item that has been bought or holds stock.
-var ErrItemHasStock = domain.Conflict("Cannot delete! Item has stock or purchase records")
+func (r *itemRepository) Update(ctx context.Context, it *domain_stock.Item) error {
+	pool, err := pgutil.TenantPool(ctx, r.pools)
+	if err != nil {
+		return err
+	}
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := lock(ctx, tx, itemsTable); err != nil {
+			return err
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pms.mst_stk_items WHERE item_cd = $1 FOR UPDATE)`, it.ID).Scan(&exists); err != nil {
+			return domain.Internal("Could not load item", err)
+		}
+		if !exists {
+			return domain_stock.ErrItemNotFound
+		}
+		if err := r.checkAll(ctx, tx, it); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `CALL pms.update_mst_stk_items($16::integer, `+itemTypes+`)`, append(args(it), it.ID)...); err != nil {
+			return saveError(err)
+		}
+		return nil
+	})
+}
 
-// itemHasStockSQL is true when the item's stock row records a purchase or any stock movement.
-// FOR UPDATE locks that row, so nothing records a movement before the delete commits.
-const itemHasStockSQL = `
-	SELECT EXISTS (
-		SELECT 1 FROM pms.mst_stk_items_transactions
-		WHERE item_cd = $1
-		  AND (last_purchase_date IS NOT NULL
-		       OR COALESCE(stk_ob, 0) <> 0 OR COALESCE(stk_cr, 0) <> 0 OR COALESCE(stk_db, 0) <> 0
-		       OR COALESCE(stk_cr_jv, 0) <> 0 OR COALESCE(stk_db_jv, 0) <> 0 OR COALESCE(stk_cb, 0) <> 0)
-		FOR UPDATE)`
-
-// Delete calls the DBA's delete procedure under the items lock. "record not found" is a 404; a
-// foreign key still pointing at the item (its stock row, until the DBA's procedure removes it)
-// is a 409.
+// Delete reads the item's stored description and code under the items lock and calls the DBA's
+// delete procedure with them. His procedure checks first and refuses an item with stock or
+// purchase information; his trigger removes the item's stock row.
 func (r *itemRepository) Delete(ctx context.Context, id int64) error {
 	pool, err := pgutil.TenantPool(ctx, r.pools)
 	if err != nil {
@@ -229,27 +255,17 @@ func (r *itemRepository) Delete(ctx context.Context, id int64) error {
 		if err := lock(ctx, tx, itemsTable); err != nil {
 			return err
 		}
-		// Our own guard, whatever delete procedure live has: an item that has been bought or holds
-		// stock must stay, or its history is lost. The stock row is locked so nothing records a
-		// movement between this check and the delete.
-		var hasStock bool
-		if err := tx.QueryRow(ctx, itemHasStockSQL, id).Scan(&hasStock); err != nil {
-			return domain.Internal("Could not check the item's stock", err)
+		var desc, code string
+		err := tx.QueryRow(ctx, `SELECT COALESCE(item_desc, ''), COALESCE(item_code, '') FROM pms.mst_stk_items WHERE item_cd = $1 FOR UPDATE`, id).
+			Scan(&desc, &code)
+		if pgutil.IsNoRows(err) {
+			return domain_stock.ErrItemNotFound
 		}
-		if hasStock {
-			return ErrItemHasStock
+		if err != nil {
+			return domain.Internal("Could not load item", err)
 		}
-		if _, err := tx.Exec(ctx, `CALL pms.delete_mst_stk_items($1::integer)`, id); err != nil {
-			if msg, ok := raised(err); ok {
-				if strings.Contains(strings.ToLower(msg), "not found") {
-					return domain_stock.ErrItemNotFound
-				}
-				return domain.Conflict(msg)
-			}
-			if isForeignKeyViolation(err) {
-				return domain.Conflict("Cannot delete! Item still has a stock record")
-			}
-			return domain.Internal("Could not delete item", err)
+		if _, err := tx.Exec(ctx, `CALL pms.delete_mst_stk_items($1::integer, $2::varchar, $3::varchar)`, id, desc, code); err != nil {
+			return deleteError(err, "Item", domain_stock.ErrItemNotFound)
 		}
 		return nil
 	})

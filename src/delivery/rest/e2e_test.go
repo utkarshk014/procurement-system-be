@@ -921,7 +921,19 @@ func TestEndToEnd(t *testing.T) {
 			assert.Equal(t, 422, api.do("POST", base+l.path+"/", esis, map[string]any{"name": ""}).status)
 			assert.Equal(t, 404, api.do("GET", base+l.path+"/999", esis, nil).status)
 			assert.Equal(t, 404, api.do("GET", base+l.path+"/x", esis, nil).status)
-			assert.Equal(t, 405, api.do("DELETE", base+l.path+"/1", esis, nil).status, "no delete procedure")
+			assert.Equal(t, 404, api.do("DELETE", base+l.path+"/999", esis, nil).status)
+
+			// Edit: rename, a clash with another row, then delete a row nothing uses.
+			spare := api.do("POST", base+l.path+"/", esis, map[string]any{"name": "Spare " + l.label})
+			require.Equal(t, 201, spare.status, spare.body)
+			spareID := int(spare.data()["id"].(float64))
+			renamed := api.do("PUT", fmt.Sprintf("%s%s/%d", base, l.path, spareID), esis, map[string]any{"name": " Spare  " + l.label + " 2 "})
+			require.Equal(t, 200, renamed.status, renamed.body)
+			assert.Equal(t, "Spare "+l.label+" 2", renamed.data()["name"])
+			clash := api.do("PUT", fmt.Sprintf("%s%s/%d", base, l.path, spareID), esis, map[string]any{"name": "snack foods"})
+			assert.Equal(t, 409, clash.status, clash.body)
+			assert.Equal(t, 404, api.do("PUT", base+l.path+"/999", esis, map[string]any{"name": "x"}).status)
+			assert.Equal(t, 204, api.do("DELETE", fmt.Sprintf("%s%s/%d", base, l.path, spareID), esis, nil).status)
 
 			// The DBA's tables have no unique constraint: only our lock stops a race.
 			statuses := concurrently(6, func(i int) int {
@@ -970,18 +982,19 @@ func TestEndToEnd(t *testing.T) {
 		dup := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "LAYS 50G", "item_code": "LAY-50", "goods_service_item": "Goods", "gst_applicable": false})
 		assert.Equal(t, 409, dup.status, dup.body)
 		assert.Len(t, dup.fieldErrors(), 2, "description and code are both taken")
-		ghost := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "Ghost", "grp_cd": 999, "uom_cd": 999, "goods_service_item": "Goods", "gst_applicable": false})
+		ghost := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "Ghost", "item_code": "GHOST", "grp_cd": 999, "uom_cd": 999, "goods_service_item": "Goods", "gst_applicable": false})
 		assert.Equal(t, 422, ghost.status)
 		assert.Equal(t, map[string]string{"grp_cd": "does not exist", "uom_cd": "does not exist"}, ghost.fieldErrors())
 		bad := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "", "goods_service_item": "Both", "gst_hsn_code": "12", "gst_percentage": 12, "sgst_percentage": 9, "cgst_percentage": 9})
 		assert.Equal(t, 422, bad.status)
-		assert.Len(t, bad.fieldErrors(), 6, "every problem at once")
+		assert.Len(t, bad.fieldErrors(), 7, "every problem at once")
+		assert.Equal(t, "is required", bad.fieldErrors()["item_code"], "the DBA's insert needs a code")
 		assert.Equal(t, "is required", bad.fieldErrors()["grp_cd"], "group is required (Uncle)")
 		assert.Equal(t, "is required", bad.fieldErrors()["uom_cd"], "UOM is required (Uncle)")
-		serial := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "AMC visit", "goods_service_item": "Service", "track_serial": true, "gst_applicable": false})
+		serial := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "AMC visit", "item_code": "AMC", "goods_service_item": "Service", "track_serial": true, "gst_applicable": false})
 		assert.Equal(t, "applies to goods only", serial.fieldErrors()["track_serial"])
 
-		amc := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "AMC visit", "goods_service_item": "Service", "gst_hsn_code": "998719", "gst_percentage": 18, "sgst_percentage": 9, "cgst_percentage": 9})
+		amc := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "AMC visit", "item_code": "AMC", "goods_service_item": "Service", "gst_hsn_code": "998719", "gst_percentage": 18, "sgst_percentage": 9, "cgst_percentage": 9})
 		require.Equal(t, 201, amc.status, amc.body)
 		assert.Len(t, api.do("GET", base+"items/", esis, nil).list(), 2)
 
@@ -995,10 +1008,24 @@ func TestEndToEnd(t *testing.T) {
 		require.NoError(t, err)
 		kept := api.do("DELETE", fmt.Sprintf("%sitems/%d", base, int(lays["id"].(float64))), esis, nil)
 		assert.Equal(t, 409, kept.status)
-		assert.Equal(t, "Cannot delete! Item has stock or purchase records", kept.errMessage())
+		assert.Equal(t, "Cannot delete item. Stock transactions or balances exist.", kept.errMessage())
+
+		// Edit an item; a clash with another item's description or code is a 409.
+		edit := map[string]any{"item_desc": "Lays 52g", "item_code": "LAY-52", "grp_cd": ids["groups"], "uom_cd": nos.data()["id"],
+			"goods_service_item": "Goods", "gst_applicable": false}
+		laysPath := fmt.Sprintf("%sitems/%d", base, int(lays["id"].(float64)))
+		edited := api.do("PUT", laysPath, esis, edit)
+		require.Equal(t, 200, edited.status, edited.body)
+		assert.Equal(t, "Lays 52g", edited.data()["item_desc"])
+		assert.Equal(t, false, edited.data()["gst_applicable"])
+
+		// A group, unit, category or manufacturer that items use cannot be deleted.
+		used := api.do("DELETE", fmt.Sprintf("%sgroups/%d", base, int(ids["groups"])), esis, nil)
+		assert.Equal(t, 409, used.status, used.body)
+		assert.Equal(t, "Cannot delete. Stock items are linked to this group", used.errMessage())
 
 		statuses := concurrently(4, func(i int) int {
-			return api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "Race item", "goods_service_item": "Goods", "gst_applicable": false}).status
+			return api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "Race item", "item_code": "RACE", "goods_service_item": "Goods", "gst_applicable": false}).status
 		})
 		assert.Equal(t, []int{201, 409, 409, 409}, statuses)
 	})
@@ -1403,7 +1430,6 @@ func legacyScripts() []string {
 		filepath.Join(dir, "003_local_fixes.sql"),
 		filepath.Join(dir, "004_delete_objects.sql"),
 		filepath.Join(dir, "005_stock_objects.sql"),
-		filepath.Join(dir, "006_stock_local_fixes.sql"),
 	}
 }
 

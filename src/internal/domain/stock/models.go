@@ -23,16 +23,21 @@ type List struct {
 	IDCol    string // grp_cd
 	NameCol  string // item_group
 	Insert   string // pms.insert_mst_stk_group(name)
-	Validate string // pms.fn_validate_mst_stk_group(id, name)
+	Update   string // pms.update_mst_stk_group(id, name)
+	Delete   string // pms.delete_mst_stk_group(id, name): checks first, refuses a row items use
+	Validate string // pms.fn_validate_mst_stk_group(id, name); id 0 for a new row
 }
 
 var (
 	Group = List{Label: "Item group", Plural: "item groups", Table: "pms.mst_stk_group", IDCol: "grp_cd", NameCol: "item_group",
-		Insert: "pms.insert_mst_stk_group", Validate: "pms.fn_validate_mst_stk_group"}
+		Insert: "pms.insert_mst_stk_group", Update: "pms.update_mst_stk_group", Delete: "pms.delete_mst_stk_group",
+		Validate: "pms.fn_validate_mst_stk_group"}
 	Category = List{Label: "Category", Plural: "categories", Table: "pms.mst_stk_category", IDCol: "cat_cd", NameCol: "category",
-		Insert: "pms.insert_mst_stk_category", Validate: "pms.fn_validate_mst_stk_category"}
+		Insert: "pms.insert_mst_stk_category", Update: "pms.update_mst_stk_category", Delete: "pms.delete_mst_stk_category",
+		Validate: "pms.fn_validate_mst_stk_category"}
 	Manufacturer = List{Label: "Manufacturer", Plural: "manufacturers", Table: "pms.mst_stk_manufacturer", IDCol: "manf_cd", NameCol: "manufacturer",
-		Insert: "pms.insert_mst_stk_manufacturer", Validate: "pms.fn_validate_mst_stk_manufacturer"}
+		Insert: "pms.insert_mst_stk_manufacturer", Update: "pms.update_mst_stk_manufacturer", Delete: "pms.delete_mst_stk_manufacturer",
+		Validate: "pms.fn_validate_mst_stk_manufacturer"}
 )
 
 // Entry is one row of a one-field list.
@@ -106,7 +111,7 @@ func UOMFunctionError(message string) error {
 		field = "uom_as_standard"
 	case strings.HasPrefix(message, "UOM"):
 		field = "uom"
-	case strings.HasPrefix(message, "Number decimal"):
+	case strings.HasPrefix(message, "Number decimal"), strings.HasPrefix(message, "Number of decimals"):
 		field = "number_decimal"
 	}
 	fe := domain.FieldError{Field: field, Message: message}
@@ -154,7 +159,7 @@ type Item struct {
 // missing value can default to true, as the table does.
 type ItemInput struct {
 	Desc           string   `json:"item_desc" validate:"required,max=250"`
-	Code           string   `json:"item_code" validate:"max=20"`
+	Code           string   `json:"item_code" validate:"required,max=20"`
 	GroupID        *int64   `json:"grp_cd"`
 	CategoryID     *int64   `json:"cat_cd"`
 	ManufacturerID *int64   `json:"manf_cd"`
@@ -197,31 +202,38 @@ func ItemLinks(group, category, manufacturer, uom *int64) []ItemLink {
 // ErrItemNotFound is the 404 for an unknown item id.
 var ErrItemNotFound = domain.NotFound("Item not found")
 
-// ItemFunctionError maps the DBA's item messages to fields. His checks never report a
-// duplicate, so everything is a 422.
+// ItemFunctionError maps the DBA's item messages (insert, update and validate word them
+// differently) to fields. A duplicate description or code is a 409, the rest a 422.
 func ItemFunctionError(message string) error {
 	message = strings.TrimSpace(message)
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "record not found") || (strings.HasPrefix(message, "Item code ") && strings.HasSuffix(message, "does not exist")) {
+		return ErrItemNotFound
+	}
 	field := ""
 	switch {
 	case strings.HasPrefix(message, "Item description"):
 		field = "item_desc"
-	case strings.HasPrefix(message, "Item type"), strings.HasPrefix(message, "Invalid item type"):
+	case strings.HasPrefix(message, "Item code"):
+		field = "item_code"
+	case strings.HasPrefix(message, "Item type"), strings.HasPrefix(message, "Invalid item type"),
+		strings.HasPrefix(message, "Goods/Service"), strings.HasPrefix(message, "Consumable"),
+		strings.HasPrefix(message, "Service items"):
 		field = "goods_service_item"
-	case strings.HasPrefix(message, "Stock group"):
+	case strings.HasPrefix(message, "Stock group"), strings.HasPrefix(message, "Invalid stock group"):
 		field = "grp_cd"
-	case strings.HasPrefix(message, "Stock category"):
+	case strings.HasPrefix(message, "Stock category"), strings.HasPrefix(message, "Invalid category"):
 		field = "cat_cd"
-	case strings.HasPrefix(message, "Manufacturer"):
+	case strings.HasPrefix(message, "Manufacturer"), strings.HasPrefix(message, "Invalid manufacturer"):
 		field = "manf_cd"
-	case strings.HasPrefix(message, "Unit of measurement"):
+	case strings.HasPrefix(message, "Unit of measurement"), strings.HasPrefix(message, "Invalid UOM"):
 		field = "uom_cd"
-	case strings.HasPrefix(message, "Consumable"):
-		field = "goods_service_item"
 	case strings.HasPrefix(message, "GST"):
 		field = "gst_percentage"
 	}
-	if strings.Contains(message, "record not found") {
-		return ErrItemNotFound
+	fe := domain.FieldError{Field: field, Message: message}
+	if strings.Contains(lower, "already exists") {
+		return domain.Conflict("Item already exists", fe)
 	}
-	return domain.Validation(domain.FieldError{Field: field, Message: message})
+	return domain.Validation(fe)
 }

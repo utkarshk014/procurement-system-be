@@ -2,6 +2,7 @@
 package controllers_stock
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -9,18 +10,24 @@ import (
 	domain_stock "github.com/utkarshk014/procurement-system-be/src/internal/domain/stock"
 )
 
-// Controller is the routes one stock master serves. Delete answers 405 where there is none.
+// Controller is the routes every stock master serves.
 type Controller interface {
 	List(w http.ResponseWriter, r *http.Request) error
 	Get(w http.ResponseWriter, r *http.Request) error
 	Validate(w http.ResponseWriter, r *http.Request) error
 	Create(w http.ResponseWriter, r *http.Request) error
+	Update(w http.ResponseWriter, r *http.Request) error
+	Delete(w http.ResponseWriter, r *http.Request) error
 }
 
-// ItemController adds delete.
-type ItemController interface {
-	Controller
-	Delete(w http.ResponseWriter, r *http.Request) error
+// usecase is the shape all five stock use cases share: In is the body, Out the stored row.
+type usecase[In, Out any] interface {
+	List(ctx context.Context) ([]Out, error)
+	Get(ctx context.Context, id int64) (*Out, error)
+	Validate(ctx context.Context, in In) (*Out, error)
+	Create(ctx context.Context, in In) (*Out, error)
+	Update(ctx context.Context, id int64, in In) (*Out, error)
+	Delete(ctx context.Context, id int64) error
 }
 
 // validateResponse is a dry-run result: the row as it would be saved.
@@ -29,17 +36,28 @@ type validateResponse[T any] struct {
 	Entry T    `json:"entry"`
 }
 
-// crud is the shared shape: list, get by id, validate and create with one input type.
-type crud[In any, Out any] struct {
-	what     string // "Item group", for the 404 of a bad id
-	list     func(r *http.Request) ([]Out, error)
-	get      func(r *http.Request, id int64) (*Out, error)
-	validate func(r *http.Request, in In) (*Out, error)
-	create   func(r *http.Request, in In) (*Out, error)
+type controller[In, Out any] struct {
+	what string // "Item group", for the 404 of a bad id
+	uc   usecase[In, Out]
 }
 
-func (c crud[In, Out]) List(w http.ResponseWriter, r *http.Request) error {
-	rows, err := c.list(r)
+// NewListController serves item groups, categories or manufacturers.
+func NewListController(list domain_stock.List, uc domain_stock.ListUsecase, _ *slog.Logger) Controller {
+	return controller[domain_stock.EntryInput, domain_stock.Entry]{what: list.Label, uc: uc}
+}
+
+// NewUOMController serves the units of measurement.
+func NewUOMController(uc domain_stock.UOMUsecase, _ *slog.Logger) Controller {
+	return controller[domain_stock.UOMInput, domain_stock.UOM]{what: "Unit of measurement", uc: uc}
+}
+
+// NewItemController serves the item master.
+func NewItemController(uc domain_stock.ItemUsecase, _ *slog.Logger) Controller {
+	return controller[domain_stock.ItemInput, domain_stock.Item]{what: "Item", uc: uc}
+}
+
+func (c controller[In, Out]) List(w http.ResponseWriter, r *http.Request) error {
+	rows, err := c.uc.List(r.Context())
 	if err != nil {
 		return err
 	}
@@ -47,12 +65,12 @@ func (c crud[In, Out]) List(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (c crud[In, Out]) Get(w http.ResponseWriter, r *http.Request) error {
+func (c controller[In, Out]) Get(w http.ResponseWriter, r *http.Request) error {
 	id, err := rest_utils.IntParam(r, "id", c.what)
 	if err != nil {
 		return err
 	}
-	row, err := c.get(r, id)
+	row, err := c.uc.Get(r.Context(), id)
 	if err != nil {
 		return err
 	}
@@ -60,12 +78,13 @@ func (c crud[In, Out]) Get(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (c crud[In, Out]) Validate(w http.ResponseWriter, r *http.Request) error {
+// Validate dry-runs a create without writing.
+func (c controller[In, Out]) Validate(w http.ResponseWriter, r *http.Request) error {
 	var in In
 	if err := rest_utils.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	row, err := c.validate(r, in)
+	row, err := c.uc.Validate(r.Context(), in)
 	if err != nil {
 		return err
 	}
@@ -73,12 +92,13 @@ func (c crud[In, Out]) Validate(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-func (c crud[In, Out]) Create(w http.ResponseWriter, r *http.Request) error {
+// Create adds a row (201) and returns it as stored.
+func (c controller[In, Out]) Create(w http.ResponseWriter, r *http.Request) error {
 	var in In
 	if err := rest_utils.DecodeJSON(w, r, &in); err != nil {
 		return err
 	}
-	row, err := c.create(r, in)
+	row, err := c.uc.Create(r.Context(), in)
 	if err != nil {
 		return err
 	}
@@ -86,62 +106,27 @@ func (c crud[In, Out]) Create(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// NewListController serves item groups, categories or manufacturers.
-func NewListController(list domain_stock.List, uc domain_stock.ListUsecase, _ *slog.Logger) Controller {
-	return crud[domain_stock.EntryInput, domain_stock.Entry]{
-		what: list.Label,
-		list: func(r *http.Request) ([]domain_stock.Entry, error) { return uc.List(r.Context()) },
-		get:  func(r *http.Request, id int64) (*domain_stock.Entry, error) { return uc.Get(r.Context(), id) },
-		validate: func(r *http.Request, in domain_stock.EntryInput) (*domain_stock.Entry, error) {
-			return uc.Validate(r.Context(), in)
-		},
-		create: func(r *http.Request, in domain_stock.EntryInput) (*domain_stock.Entry, error) {
-			return uc.Create(r.Context(), in)
-		},
+// Update saves an edit (the whole body, as for create) and returns the row as stored.
+func (c controller[In, Out]) Update(w http.ResponseWriter, r *http.Request) error {
+	id, err := rest_utils.IntParam(r, "id", c.what)
+	if err != nil {
+		return err
 	}
-}
-
-// NewUOMController serves the units of measurement.
-func NewUOMController(uc domain_stock.UOMUsecase, _ *slog.Logger) Controller {
-	return crud[domain_stock.UOMInput, domain_stock.UOM]{
-		what: "Unit of measurement",
-		list: func(r *http.Request) ([]domain_stock.UOM, error) { return uc.List(r.Context()) },
-		get:  func(r *http.Request, id int64) (*domain_stock.UOM, error) { return uc.Get(r.Context(), id) },
-		validate: func(r *http.Request, in domain_stock.UOMInput) (*domain_stock.UOM, error) {
-			return uc.Validate(r.Context(), in)
-		},
-		create: func(r *http.Request, in domain_stock.UOMInput) (*domain_stock.UOM, error) {
-			return uc.Create(r.Context(), in)
-		},
+	var in In
+	if err := rest_utils.DecodeJSON(w, r, &in); err != nil {
+		return err
 	}
-}
-
-type itemController struct {
-	crud[domain_stock.ItemInput, domain_stock.Item]
-	uc domain_stock.ItemUsecase
-}
-
-// NewItemController serves the item master.
-func NewItemController(uc domain_stock.ItemUsecase, _ *slog.Logger) ItemController {
-	return itemController{
-		crud: crud[domain_stock.ItemInput, domain_stock.Item]{
-			what: "Item",
-			list: func(r *http.Request) ([]domain_stock.Item, error) { return uc.List(r.Context()) },
-			get:  func(r *http.Request, id int64) (*domain_stock.Item, error) { return uc.Get(r.Context(), id) },
-			validate: func(r *http.Request, in domain_stock.ItemInput) (*domain_stock.Item, error) {
-				return uc.Validate(r.Context(), in)
-			},
-			create: func(r *http.Request, in domain_stock.ItemInput) (*domain_stock.Item, error) {
-				return uc.Create(r.Context(), in)
-			},
-		},
-		uc: uc,
+	row, err := c.uc.Update(r.Context(), id, in)
+	if err != nil {
+		return err
 	}
+	rest_utils.Respond(w, http.StatusOK, row)
+	return nil
 }
 
-// Delete removes an item (204).
-func (c itemController) Delete(w http.ResponseWriter, r *http.Request) error {
-	id, err := rest_utils.IntParam(r, "id", "Item")
+// Delete removes a row (204); the DBA's procedure refuses one that is still used.
+func (c controller[In, Out]) Delete(w http.ResponseWriter, r *http.Request) error {
+	id, err := rest_utils.IntParam(r, "id", c.what)
 	if err != nil {
 		return err
 	}

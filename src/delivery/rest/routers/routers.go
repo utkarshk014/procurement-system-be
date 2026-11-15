@@ -138,13 +138,12 @@ func SetInstitutionRoutes(r chi.Router, auth middlewares.AuthMiddleware, c contr
 
 // StockControllers are the stock masters' controllers.
 type StockControllers struct {
-	Groups, Categories, Manufacturers, UOMs controllers_stock.Controller
-	Items                                   controllers_stock.ItemController
+	Groups, Categories, Manufacturers, UOMs, Items controllers_stock.Controller
 }
 
 // SetStockRoutes: the stock masters under /api/v1/stock, tenant admins only. Rows are addressed
-// by the DBA's numeric id. Only items can be deleted, and nothing can be edited yet: the DBA has
-// given no update procedures, and delete for items only.
+// by the DBA's numeric id. Every list can be listed, read, validated, created, edited and
+// deleted; the DBA's delete procedures refuse a row that is still used.
 func SetStockRoutes(r chi.Router, auth middlewares.AuthMiddleware, c StockControllers, logger *slog.Logger) {
 	r.Route("/api/v1/stock", func(r chi.Router) {
 		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
@@ -156,8 +155,9 @@ func SetStockRoutes(r chi.Router, auth middlewares.AuthMiddleware, c StockContro
 				r.Post("/", rest_utils.Wrap(logger, ctl.Create))
 				r.Post("/validate", rest_utils.Wrap(logger, ctl.Validate))
 				r.Get("/{id}", rest_utils.Wrap(logger, ctl.Get))
+				r.Put("/{id}", rest_utils.Wrap(logger, ctl.Update))
+				r.Delete("/{id}", rest_utils.Wrap(logger, ctl.Delete))
 			})
 		}
-		r.Delete("/items/{id}", rest_utils.Wrap(logger, c.Items.Delete))
 	})
 }

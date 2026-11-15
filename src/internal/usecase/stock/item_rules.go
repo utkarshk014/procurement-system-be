@@ -24,7 +24,8 @@ var (
 // problems come back together: a description; type Goods or Service; a service is never
 // consumable, a spare or serial-tracked; with GST, all three percentages and GST = SGST + CGST;
 // without GST, no percentages. Ours on top: the table's lengths, item code and HSN format,
-// percentages from 0 to 100 with at most 2 decimals (NUMERIC(5,2)), positive link ids, and a
+// percentages from 0 to 100 with at most 2 decimals (NUMERIC(5,2)), positive link ids, an item
+// code (the DBA's insert requires one since 15 Nov, and his delete matches on it), and a
 // group and a UOM on every item (Uncle, 15 Nov: "UOM is must", "group is needed").
 func PrepareItem(in domain_stock.ItemInput) (*domain_stock.Item, error) {
 	in.Desc = domain_stock.NormalizeName(in.Desc)

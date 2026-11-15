@@ -52,12 +52,12 @@ func (uc *listUsecase) Validate(ctx context.Context, in domain_stock.EntryInput)
 	if err != nil {
 		return nil, err
 	}
-	if other, taken, err := uc.repo.NameTaken(ctx, name); err != nil {
+	if other, taken, err := uc.repo.NameTaken(ctx, name, 0); err != nil {
 		return nil, err
 	} else if taken {
 		return nil, uc.list.NameTaken(other)
 	}
-	res, err := uc.repo.CheckWithFunction(ctx, name)
+	res, err := uc.repo.CheckWithFunction(ctx, 0, name)
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +82,40 @@ func (uc *listUsecase) Create(ctx context.Context, in domain_stock.EntryInput) (
 	}
 	uc.logger.InfoContext(ctx, strings.ToLower(uc.list.Label)+" created", "tenant", p.TenantCode, "user_id", p.UserID, "id", id)
 	return uc.repo.Get(ctx, id)
+}
+
+func (uc *listUsecase) Update(ctx context.Context, id int64, in domain_stock.EntryInput) (*domain_stock.Entry, error) {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if id <= 0 {
+		return nil, uc.list.NotFound()
+	}
+	name, err := PrepareName(in)
+	if err != nil {
+		return nil, err
+	}
+	if err := uc.repo.Update(ctx, id, name); err != nil {
+		return nil, err
+	}
+	uc.logger.InfoContext(ctx, strings.ToLower(uc.list.Label)+" updated", "tenant", p.TenantCode, "user_id", p.UserID, "id", id)
+	return uc.repo.Get(ctx, id)
+}
+
+func (uc *listUsecase) Delete(ctx context.Context, id int64) error {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return err
+	}
+	if id <= 0 {
+		return uc.list.NotFound()
+	}
+	if err := uc.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	uc.logger.InfoContext(ctx, strings.ToLower(uc.list.Label)+" deleted", "tenant", p.TenantCode, "user_id", p.UserID, "id", id)
+	return nil
 }
 
 // PrepareName tidies the spaces in a list entry's name and checks it.
@@ -170,6 +204,41 @@ func (uc *uomUsecase) Create(ctx context.Context, in domain_stock.UOMInput) (*do
 	}
 	uc.logger.InfoContext(ctx, "unit of measurement created", "tenant", p.TenantCode, "user_id", p.UserID, "id", id)
 	return uc.repo.Get(ctx, id)
+}
+
+func (uc *uomUsecase) Update(ctx context.Context, id int64, in domain_stock.UOMInput) (*domain_stock.UOM, error) {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if id <= 0 {
+		return nil, domain_stock.ErrUOMNotFound
+	}
+	u, err := PrepareUOM(in)
+	if err != nil {
+		return nil, err
+	}
+	u.ID = id
+	if err := uc.repo.Update(ctx, u); err != nil {
+		return nil, err
+	}
+	uc.logger.InfoContext(ctx, "unit of measurement updated", "tenant", p.TenantCode, "user_id", p.UserID, "id", id)
+	return uc.repo.Get(ctx, id)
+}
+
+func (uc *uomUsecase) Delete(ctx context.Context, id int64) error {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return err
+	}
+	if id <= 0 {
+		return domain_stock.ErrUOMNotFound
+	}
+	if err := uc.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	uc.logger.InfoContext(ctx, "unit of measurement deleted", "tenant", p.TenantCode, "user_id", p.UserID, "id", id)
+	return nil
 }
 
 // PrepareUOM upper-cases the unit, tidies the standard name and checks the decimals: off means
@@ -280,6 +349,26 @@ func (uc *itemUsecase) Create(ctx context.Context, in domain_stock.ItemInput) (*
 		return nil, err
 	}
 	uc.logger.InfoContext(ctx, "item created", "tenant", p.TenantCode, "user_id", p.UserID, "id", id)
+	return uc.repo.Get(ctx, id)
+}
+
+func (uc *itemUsecase) Update(ctx context.Context, id int64, in domain_stock.ItemInput) (*domain_stock.Item, error) {
+	p, err := domain.TenantPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if id <= 0 {
+		return nil, domain_stock.ErrItemNotFound
+	}
+	it, err := PrepareItem(in)
+	if err != nil {
+		return nil, err
+	}
+	it.ID = id
+	if err := uc.repo.Update(ctx, it); err != nil {
+		return nil, err
+	}
+	uc.logger.InfoContext(ctx, "item updated", "tenant", p.TenantCode, "user_id", p.UserID, "id", id)
 	return uc.repo.Get(ctx, id)
 }
 

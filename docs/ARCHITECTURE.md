@@ -228,13 +228,13 @@ local fixes** we sent the DBA (`delete_fixes.sql`): `finyr_master_validate_delet
 (`IS NU+I6LL`) and did not install, and both region objects used `region_code` instead of
 `regn_code`.
 
-`005_stock_objects.sql` is the stock masters verbatim from `TABLE_PROCEDURE_FUNCTION_1_3.xlsx`
-(group, category, manufacturer, UOM, items, and the per-item stock row its trigger creates),
-with `last_purchase_qty` spelt as on live (the sheet's `last_purchase_qyu` broke every item
-insert). `006_stock_local_fixes.sql` is our `delete_mst_stk_items` (sent as
-`ITEM_DELETE_FIX.sql`, **not installed**: the DBA wrote his own item delete on 15 Nov): the sheet's version deleted
-the item while its stock row still pointed at it, so every delete failed on the foreign key.
-Ours deletes that row first, and refuses an item with any stock or purchase.
+`005_stock_objects.sql` is the stock masters verbatim from `PROCEDURE_FUNCTION_1_6.xlsx` (15 Nov,
+on live): group, category, manufacturer, UOM and items, each with insert, update, delete and
+their validate functions, and the per-item stock row (made by an insert trigger, removed by a
+delete trigger). Only the order changed: triggers come after the functions they run. Deletes
+call his procedures with the row's stored name (items: description and code), read under the
+table's lock, so the API only takes the id. Our earlier `ITEM_DELETE_FIX.sql` was never
+installed and is dropped.
 
 ## 6. Setup wizard
 
@@ -341,7 +341,7 @@ upper-case, `^[A-Z]{3}$`; name: spaces tidied, ≤ 250, unique ignoring case. Or
 checks → duplicates (409) → the DBA's validate function → one transaction holding
 `pg_advisory_xact_lock(hashtext('pms.mst_place'))` (per table): re-check, re-validate,
 `CALL` his insert. His inserts RAISE on duplicates (P0001), mapped the same way. Deletes
-go through his delete procedures (§11). No edit: he has given no update procedure.
+go through his delete procedures (§11). No edit for places, branches and regions: he has given no update procedure.
 
 **Institutions.**
 
@@ -426,8 +426,8 @@ only place that maps them to HTTP.
 20. Form 5, what is `reg_date`? Built: defaults to today, never in the future. Which fields are mandatory? Built: trust, codes, name, place, branch, start year.
 21. Form 5, `mst_branch` and `mst_inst` have no `last_update_at` trigger (place and region do).
 22. Deletes (v1.2, 11 Nov): four objects need the fixed text in `delete_fixes.sql` before they work on live: `finyr_master_validate_delete` (reads a missing `company_master.finyr`), `mst_place_validate_delete` (typo, does not install), `mst_region_delete` and `mst_region_validate_delete` (`region_code` → `regn_code`). Until then, deleting a financial year, place or region on live fails.
-23. Stock deletes (15 Nov): the DBA added his own item delete (with a stock check) and deletes for group, category, manufacturer and UOM, plus update procedures for all five. Their text is not in db/legacy yet; the API still calls the old one-argument `delete_mst_stk_items`, which Utkarsh asked him to drop. Switch to the new procedures once we have their definitions.
-24. Stock: no update procedures for group, category, manufacturer, UOM or items, and no delete for group, category, manufacturer or UOM, so nothing can be edited (the old screens have Edit).
+23. Done 15 Nov: the DBA's stock update and delete procedures (`PROCEDURE_FUNCTION_1_6.xlsx`) are in `005` and used by the API. Utkarsh asked him to drop the old one-argument `delete_mst_stk_items` on live (with the new delete trigger it deleted items that hold stock).
+24. Stock: `delete_mst_stk_items` matches on the item code and refuses an empty one, so an item saved without a code before 15 Nov cannot be deleted until it is given one (edit it first). `fn_validate_mst_stk_items` still has no duplicate checks (his insert and update do; the API checks too).
 25. Stock: the DBA's tables have no unique constraints and his insert procedures accept a duplicate item description or code. We refuse duplicates (ignoring case) under a per-table lock; a unique index on `LOWER(TRIM(name))` would make the database enforce it too.
 26. Stock: `insert_mst_stk_items` accepts a NULL item type (`NULL NOT IN (...)` is not true), storing an item that is neither Goods nor Service. We require it.
 27. Done 15 Nov: every item needs a UOM and a group (Uncle: "UOM is must", "group is needed"). Enforced by the API; the table still allows NULL.
