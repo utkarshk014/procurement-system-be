@@ -1,6 +1,5 @@
--- LOCAL FIX, not the DBA's text. Postgres runs it after 005 so items can be deleted locally and
--- in the e2e test. The same text is what we sent the DBA (ITEM_DELETE_FIX.sql); drop this file
--- once he installs it on live (open items in docs/ARCHITECTURE.md).
+-- Written by us (sent as ITEM_DELETE_FIX.sql) and installed on live by the DBA on 15 Nov 2026,
+-- replacing the sheet's delete_mst_stk_items. Postgres runs it after 005 so local and e2e match live.
 --
 -- pms.delete_mst_stk_items deletes the item while its row in pms.mst_stk_items_transactions
 -- (made by the insert trigger) still points at it, so every delete fails with a foreign key

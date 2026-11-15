@@ -231,10 +231,10 @@ local fixes** we sent the DBA (`delete_fixes.sql`): `finyr_master_validate_delet
 `005_stock_objects.sql` is the stock masters verbatim from `TABLE_PROCEDURE_FUNCTION_1_3.xlsx`
 (group, category, manufacturer, UOM, items, and the per-item stock row its trigger creates),
 with `last_purchase_qty` spelt as on live (the sheet's `last_purchase_qyu` broke every item
-insert). `006_stock_local_fixes.sql` is our **marked local fix** to `delete_mst_stk_items`
-(sent to the DBA as `ITEM_DELETE_FIX.sql`): his version deletes the item while its stock row
-still points at it, so every delete fails on the foreign key. Ours deletes that row first, and
-refuses an item with any stock or purchase.
+insert). `006_stock_local_fixes.sql` is our `delete_mst_stk_items` (sent as
+`ITEM_DELETE_FIX.sql`, **installed on live by the DBA on 15 Nov**): the sheet's version deleted
+the item while its stock row still pointed at it, so every delete failed on the foreign key.
+Ours deletes that row first, and refuses an item with any stock or purchase.
 
 ## 6. Setup wizard
 
@@ -426,7 +426,7 @@ only place that maps them to HTTP.
 20. Form 5, what is `reg_date`? Built: defaults to today, never in the future. Which fields are mandatory? Built: trust, codes, name, place, branch, start year.
 21. Form 5, `mst_branch` and `mst_inst` have no `last_update_at` trigger (place and region do).
 22. Deletes (v1.2, 11 Nov): four objects need the fixed text in `delete_fixes.sql` before they work on live: `finyr_master_validate_delete` (reads a missing `company_master.finyr`), `mst_place_validate_delete` (typo, does not install), `mst_region_delete` and `mst_region_validate_delete` (`region_code` → `regn_code`). Until then, deleting a financial year, place or region on live fails.
-23. Stock (15 Nov): `delete_mst_stk_items` fails on live (the stock row's foreign key); fixed locally in `006_stock_local_fixes.sql`, sent as `ITEM_DELETE_FIX.sql`. Until installed, deleting an item on live is a `409`.
+23. Done 15 Nov: Uncle installed our `delete_mst_stk_items` (`ITEM_DELETE_FIX.sql`, same text as `006_stock_local_fixes.sql`). Worth one read-only check: `SELECT pg_get_functiondef('pms.delete_mst_stk_items(integer)'::regprocedure);` should contain *Item has stock or purchase records*.
 24. Stock: no update procedures for group, category, manufacturer, UOM or items, and no delete for group, category, manufacturer or UOM, so nothing can be edited (the old screens have Edit).
 25. Stock: the DBA's tables have no unique constraints and his insert procedures accept a duplicate item description or code. We refuse duplicates (ignoring case) under a per-table lock; a unique index on `LOWER(TRIM(name))` would make the database enforce it too.
 26. Stock: `insert_mst_stk_items` accepts a NULL item type (`NULL NOT IN (...)` is not true), storing an item that is neither Goods nor Service. We require it.
