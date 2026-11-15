@@ -436,6 +436,77 @@ then one locked transaction re-checks and calls his insert procedure.
 
 ---
 
+## Stock masters (tenant_admin)
+
+Item groups, categories, manufacturers, units of measurement (UOM) and items, on the DBA's
+`pms.mst_stk_*` tables. His tables number their rows themselves, so every row is addressed by
+a numeric **`id`** (his `grp_cd`, `cat_cd`, `manf_cd`, `uom_cd`, `item_cd`). There is **no
+edit** yet (no update procedures) and only **items** can be deleted (open items).
+
+| Method | Path | Success | Errors |
+|---|---|---|---|
+| GET | `/api/v1/stock/{list}` | `200` every row, sorted by name | — |
+| GET | `/api/v1/stock/{list}/{id}` | `200` the row | `404` |
+| POST | `/api/v1/stock/{list}/validate` | `200 { "valid": true, "entry": {…} }` (nothing written, `id` 0) | `409` · `422` |
+| POST | `/api/v1/stock/{list}` | `201` the saved row | `409` · `422` |
+| DELETE | `/api/v1/stock/items/{id}` | `204` | `404` · `409` |
+
+`{list}` is `groups`, `categories`, `manufacturers`, `uoms` or `items`.
+
+### Groups, categories, manufacturers
+
+```json
+{ "id": 1, "name": "Snack Foods", "rec_created_at": "2026-11-15T12:21:03Z", "last_update_at": null }
+```
+
+Body: `{ "name": "Snack Foods" }`. Required, spaces tidied, ≤ 250, unique **ignoring case and
+spaces** (`409`, *is already used by #1*).
+
+### Units of measurement
+
+```json
+{ "id": 2, "uom": "KG", "uom_as_standard": "Kilograms", "enable_decimal": true, "number_decimal": 3 }
+```
+
+| Field | Rule |
+|---|---|
+| `uom` | required, trimmed, upper-cased, ≤ 5, no spaces, unique ignoring case |
+| `uom_as_standard` | required, spaces tidied, ≤ 50, unique ignoring case (e.g. `Numbers` for `NOS`) |
+| `enable_decimal` | boolean, default `false` |
+| `number_decimal` | decimals off: omit or `0` (stored `0`). Decimals on: required, `1`–`9` |
+
+### Items
+
+```json
+{
+  "id": 1, "item_desc": "Lays 50g", "item_code": "LAY-50",
+  "grp_cd": 1, "item_group": "Snack Foods", "cat_cd": 1, "category": "Snacks",
+  "manf_cd": 1, "manufacturer": "PepsiCo", "uom_cd": 1, "uom": "NOS",
+  "goods_service_item": "Goods", "item_consumable": true, "item_is_spare": false,
+  "gst_applicable": true, "gst_hsn_code": "1905",
+  "gst_percentage": 18, "sgst_percentage": 9, "cgst_percentage": 9,
+  "track_serial": false
+}
+```
+
+`item_group`, `category`, `manufacturer` and `uom` are read-only names of the linked rows;
+send only the ids.
+
+| Field | Rule |
+|---|---|
+| `item_desc` | required, spaces tidied, ≤ 250, unique ignoring case and spaces (`409`) |
+| `item_code` | optional, upper-cased, ≤ 20, letters, digits and `- / .`, unique (`409`) |
+| `grp_cd` · `cat_cd` · `manf_cd` · `uom_cd` | optional; each must exist (`422`, *does not exist*) |
+| `goods_service_item` | required, `Goods` or `Service` (any case) |
+| `item_consumable` · `item_is_spare` · `track_serial` | booleans; goods only (`422`, *applies to goods only*) |
+| `gst_applicable` | boolean, default `true` |
+| `gst_hsn_code` | optional, 4, 6 or 8 digits (HSN for goods, SAC for services) |
+| `gst_percentage` · `sgst_percentage` · `cgst_percentage` | GST applies: all three required, 0–100, ≤ 2 decimals, GST = SGST + CGST. GST does not apply: omit or `0` (stored empty) |
+
+Every problem comes back at once. Delete refuses (`409`) an item with stock or a purchase.
+
+---
+
 ## Institutions (tenant_admin, Form 5)
 
 Company → Trust → Institution. An institution has an **ACM code** (`inst_code`, the

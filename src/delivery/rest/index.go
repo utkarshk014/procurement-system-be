@@ -19,12 +19,14 @@ import (
 	controllers_institution "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/institution"
 	controllers_meta "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/meta"
 	controllers_setup "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/setup"
+	controllers_stock "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/stock"
 	controllers_taxdetails "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/taxdetails"
 	controllers_trust "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/trust"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/middlewares"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/routers"
 	rest_utils "github.com/utkarshk014/procurement-system-be/src/delivery/rest/utils"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
+	domain_stock "github.com/utkarshk014/procurement-system-be/src/internal/domain/stock"
 	"github.com/utkarshk014/procurement-system-be/src/internal/usecase"
 	"github.com/utkarshk014/procurement-system-be/src/utils"
 )
@@ -66,6 +68,13 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 	routers.SetCodeListRoute(r, "places", auth, controllers_codelist.NewCodeListController(usecases.Places, logger), logger)
 	routers.SetCodeListRoute(r, "branches", auth, controllers_codelist.NewCodeListController(usecases.Branches, logger), logger)
 	routers.SetCodeListRoute(r, "regions", auth, controllers_codelist.NewCodeListController(usecases.Regions, logger), logger)
+	routers.SetStockRoutes(r, auth, routers.StockControllers{
+		Groups:        controllers_stock.NewListController(domain_stock.Group, usecases.StockGroups, logger),
+		Categories:    controllers_stock.NewListController(domain_stock.Category, usecases.StockCategories, logger),
+		Manufacturers: controllers_stock.NewListController(domain_stock.Manufacturer, usecases.StockManufacturers, logger),
+		UOMs:          controllers_stock.NewUOMController(usecases.StockUOMs, logger),
+		Items:         controllers_stock.NewItemController(usecases.StockItems, logger),
+	}, logger)
 	routers.SetInstitutionRoutes(r, auth, controllers_institution.NewInstitutionController(usecases, logger), logger)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {

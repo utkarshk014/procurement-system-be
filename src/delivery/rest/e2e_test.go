@@ -897,6 +897,110 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, 1, places, "MYS kept, RAC deleted")
 	})
 
+	t.Run("stock masters: groups, categories, manufacturers, UOM, items", func(t *testing.T) {
+		const base = "/api/v1/stock/"
+		ids := map[string]float64{}
+		for _, l := range []struct{ path, label string }{{"groups", "Item group"}, {"categories", "Category"}, {"manufacturers", "Manufacturer"}} {
+			empty := api.do("GET", base+l.path+"/", esis, nil)
+			require.Equal(t, 200, empty.status, empty.body)
+			assert.NotNil(t, empty.list(), "an empty list, not 404")
+			assert.Equal(t, 403, api.do("GET", base+l.path+"/", root, nil).status)
+
+			ok := api.do("POST", base+l.path+"/validate", esis, map[string]any{"name": " Snack   Foods "})
+			require.Equal(t, 200, ok.status, ok.body)
+			assert.Len(t, api.do("GET", base+l.path+"/", esis, nil).list(), 0, "validate writes nothing")
+
+			res := api.do("POST", base+l.path+"/", esis, map[string]any{"name": " Snack   Foods "})
+			require.Equal(t, 201, res.status, res.body)
+			assert.Equal(t, "Snack Foods", res.data()["name"])
+			ids[l.path] = res.data()["id"].(float64)
+
+			dup := api.do("POST", base+l.path+"/", esis, map[string]any{"name": "SNACK foods"})
+			assert.Equal(t, 409, dup.status, dup.body)
+			assert.Contains(t, dup.fieldErrors()["name"], "is already used by #")
+			assert.Equal(t, 422, api.do("POST", base+l.path+"/", esis, map[string]any{"name": ""}).status)
+			assert.Equal(t, 404, api.do("GET", base+l.path+"/999", esis, nil).status)
+			assert.Equal(t, 404, api.do("GET", base+l.path+"/x", esis, nil).status)
+			assert.Equal(t, 405, api.do("DELETE", base+l.path+"/1", esis, nil).status, "no delete procedure")
+
+			// The DBA's tables have no unique constraint: only our lock stops a race.
+			statuses := concurrently(6, func(i int) int {
+				name := "Race " + l.label
+				if i%2 == 1 {
+					name = strings.ToUpper(name)
+				}
+				return api.do("POST", base+l.path+"/", esis, map[string]any{"name": name}).status
+			})
+			assert.Equal(t, []int{201, 409, 409, 409, 409, 409}, statuses, l.path)
+		}
+
+		nos := api.do("POST", base+"uoms/", esis, map[string]any{"uom": " nos ", "uom_as_standard": "Numbers"})
+		require.Equal(t, 201, nos.status, nos.body)
+		assert.Equal(t, "NOS", nos.data()["uom"])
+		assert.Equal(t, float64(0), nos.data()["number_decimal"])
+		kg := api.do("POST", base+"uoms/", esis, map[string]any{"uom": "kg", "uom_as_standard": "Kilograms", "enable_decimal": true, "number_decimal": 3})
+		require.Equal(t, 201, kg.status, kg.body)
+		assert.Equal(t, float64(3), kg.data()["number_decimal"])
+		dupUOM := api.do("POST", base+"uoms/", esis, map[string]any{"uom": "NOS", "uom_as_standard": "numbers"})
+		assert.Equal(t, 409, dupUOM.status)
+		assert.Len(t, dupUOM.fieldErrors(), 2, "both the unit and its standard name are taken")
+		badUOM := api.do("POST", base+"uoms/", esis, map[string]any{"uom": "LITRES", "uom_as_standard": "", "enable_decimal": true})
+		assert.Equal(t, 422, badUOM.status)
+		assert.Len(t, badUOM.fieldErrors(), 3)
+
+		item := map[string]any{
+			"item_desc": "Lays  50g", "item_code": "lay-50", "grp_cd": ids["groups"], "cat_cd": ids["categories"],
+			"manf_cd": ids["manufacturers"], "uom_cd": nos.data()["id"], "goods_service_item": "goods",
+			"item_consumable": true, "gst_hsn_code": "1905", "gst_percentage": 18, "sgst_percentage": 9, "cgst_percentage": 9,
+		}
+		ok := api.do("POST", base+"items/validate", esis, item)
+		require.Equal(t, 200, ok.status, ok.body)
+		res := api.do("POST", base+"items/", esis, item)
+		require.Equal(t, 201, res.status, res.body)
+		lays := res.data()
+		assert.Equal(t, "Lays 50g", lays["item_desc"])
+		assert.Equal(t, "LAY-50", lays["item_code"])
+		assert.Equal(t, "Goods", lays["goods_service_item"])
+		assert.Equal(t, "NOS", lays["uom"], "linked names come back")
+		assert.Equal(t, float64(18), lays["gst_percentage"])
+		var stockRows int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_stk_items_transactions WHERE item_cd = $1`, int(lays["id"].(float64))).Scan(&stockRows))
+		assert.Equal(t, 1, stockRows, "the DBA's trigger made the stock row")
+
+		dup := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "LAYS 50G", "item_code": "LAY-50", "goods_service_item": "Goods", "gst_applicable": false})
+		assert.Equal(t, 409, dup.status, dup.body)
+		assert.Len(t, dup.fieldErrors(), 2, "description and code are both taken")
+		ghost := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "Ghost", "grp_cd": 999, "uom_cd": 999, "goods_service_item": "Goods", "gst_applicable": false})
+		assert.Equal(t, 422, ghost.status)
+		assert.Equal(t, map[string]string{"grp_cd": "does not exist", "uom_cd": "does not exist"}, ghost.fieldErrors())
+		bad := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "", "goods_service_item": "Both", "gst_hsn_code": "12", "gst_percentage": 12, "sgst_percentage": 9, "cgst_percentage": 9})
+		assert.Equal(t, 422, bad.status)
+		assert.Len(t, bad.fieldErrors(), 4, "every problem at once")
+		serial := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "AMC visit", "goods_service_item": "Service", "track_serial": true, "gst_applicable": false})
+		assert.Equal(t, "applies to goods only", serial.fieldErrors()["track_serial"])
+
+		amc := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "AMC visit", "goods_service_item": "Service", "gst_hsn_code": "998719", "gst_percentage": 18, "sgst_percentage": 9, "cgst_percentage": 9})
+		require.Equal(t, 201, amc.status, amc.body)
+		assert.Len(t, api.do("GET", base+"items/", esis, nil).list(), 2)
+
+		amcPath := fmt.Sprintf("%sitems/%d", base, int(amc.data()["id"].(float64)))
+		del := api.do("DELETE", amcPath, esis, nil)
+		require.Equal(t, 204, del.status, del.body)
+		assert.Equal(t, 404, api.do("GET", amcPath, esis, nil).status)
+		assert.Equal(t, 404, api.do("DELETE", amcPath, esis, nil).status)
+
+		_, err := dbm.Control().Exec(ctx, `UPDATE pms.mst_stk_items_transactions SET stk_ob = 5 WHERE item_cd = $1`, int(lays["id"].(float64)))
+		require.NoError(t, err)
+		kept := api.do("DELETE", fmt.Sprintf("%sitems/%d", base, int(lays["id"].(float64))), esis, nil)
+		assert.Equal(t, 409, kept.status)
+		assert.Equal(t, "Cannot delete! Item has stock or purchase records", kept.errMessage())
+
+		statuses := concurrently(4, func(i int) int {
+			return api.do("POST", base+"items/", esis, map[string]any{"item_desc": "Race item", "goods_service_item": "Goods", "gst_applicable": false}).status
+		})
+		assert.Equal(t, []int{201, 409, 409, 409}, statuses)
+	})
+
 	t.Run("institutions import from .xlsx: dry run, import, re-import, bad files", func(t *testing.T) {
 		// The old system's own headers, a date cell, a number cell for a mobile, and every kind of bad row.
 		file := xlsxFile(t, func(f *excelize.File) {
@@ -1296,6 +1400,8 @@ func legacyScripts() []string {
 		filepath.Join(dir, "002_form5_objects.sql"),
 		filepath.Join(dir, "003_local_fixes.sql"),
 		filepath.Join(dir, "004_delete_objects.sql"),
+		filepath.Join(dir, "005_stock_objects.sql"),
+		filepath.Join(dir, "006_stock_local_fixes.sql"),
 	}
 }
 

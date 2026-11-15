@@ -2,6 +2,8 @@
 package usecase
 
 import (
+	domain_stock "github.com/utkarshk014/procurement-system-be/src/internal/domain/stock"
+	usecase_stock "github.com/utkarshk014/procurement-system-be/src/internal/usecase/stock"
 	"log/slog"
 
 	domain_auth "github.com/utkarshk014/procurement-system-be/src/internal/domain/auth"
@@ -39,6 +41,12 @@ type Usecases struct {
 	Branches      domain_codelist.Usecase
 	Regions       domain_codelist.Usecase
 	Institution   domain_institution.Usecase
+
+	StockGroups        domain_stock.ListUsecase
+	StockCategories    domain_stock.ListUsecase
+	StockManufacturers domain_stock.ListUsecase
+	StockUOMs          domain_stock.UOMUsecase
+	StockItems         domain_stock.ItemUsecase
 }
 
 // NewUsecases builds the use cases.
@@ -62,5 +70,11 @@ func NewUsecases(cfg *utils.Config, repos *repository.Repositories, databases do
 			Trusts: repos.Trust, Places: repos.Places, Branches: repos.Branches, Regions: repos.Regions,
 			FinYears: repos.FinancialYear,
 		}, cfg.Location(), logger),
+
+		StockGroups:        usecase_stock.NewListUsecase(domain_stock.Group, repos.StockGroups, logger),
+		StockCategories:    usecase_stock.NewListUsecase(domain_stock.Category, repos.StockCategories, logger),
+		StockManufacturers: usecase_stock.NewListUsecase(domain_stock.Manufacturer, repos.StockManufacturers, logger),
+		StockUOMs:          usecase_stock.NewUOMUsecase(repos.StockUOMs, logger),
+		StockItems:         usecase_stock.NewItemUsecase(repos.StockItems, logger),
 	}
 }

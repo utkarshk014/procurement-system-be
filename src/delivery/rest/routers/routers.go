@@ -16,6 +16,7 @@ import (
 	controllers_institution "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/institution"
 	controllers_meta "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/meta"
 	controllers_setup "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/setup"
+	controllers_stock "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/stock"
 	controllers_taxdetails "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/taxdetails"
 	controllers_trust "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/trust"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/middlewares"
@@ -132,5 +133,31 @@ func SetInstitutionRoutes(r chi.Router, auth middlewares.AuthMiddleware, c contr
 		r.Get("/import/template", rest_utils.Wrap(logger, c.ImportTemplate))
 		r.Post("/import", rest_utils.Wrap(logger, c.Import))
 		r.Get("/{code}", rest_utils.Wrap(logger, c.Get))
+	})
+}
+
+// StockControllers are the stock masters' controllers.
+type StockControllers struct {
+	Groups, Categories, Manufacturers, UOMs controllers_stock.Controller
+	Items                                   controllers_stock.ItemController
+}
+
+// SetStockRoutes: the stock masters under /api/v1/stock, tenant admins only. Rows are addressed
+// by the DBA's numeric id. Only items can be deleted, and nothing can be edited yet: the DBA has
+// given no update procedures, and delete for items only.
+func SetStockRoutes(r chi.Router, auth middlewares.AuthMiddleware, c StockControllers, logger *slog.Logger) {
+	r.Route("/api/v1/stock", func(r chi.Router) {
+		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
+		for path, ctl := range map[string]controllers_stock.Controller{
+			"groups": c.Groups, "categories": c.Categories, "manufacturers": c.Manufacturers, "uoms": c.UOMs, "items": c.Items,
+		} {
+			r.Route("/"+path, func(r chi.Router) {
+				r.Get("/", rest_utils.Wrap(logger, ctl.List))
+				r.Post("/", rest_utils.Wrap(logger, ctl.Create))
+				r.Post("/validate", rest_utils.Wrap(logger, ctl.Validate))
+				r.Get("/{id}", rest_utils.Wrap(logger, ctl.Get))
+			})
+		}
+		r.Delete("/items/{id}", rest_utils.Wrap(logger, c.Items.Delete))
 	})
 }

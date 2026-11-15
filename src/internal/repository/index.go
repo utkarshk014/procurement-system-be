@@ -7,6 +7,7 @@ import (
 	domain_company "github.com/utkarshk014/procurement-system-be/src/internal/domain/company"
 	domain_finyear "github.com/utkarshk014/procurement-system-be/src/internal/domain/finyear"
 	domain_institution "github.com/utkarshk014/procurement-system-be/src/internal/domain/institution"
+	domain_stock "github.com/utkarshk014/procurement-system-be/src/internal/domain/stock"
 	domain_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/domain/taxdetails"
 	domain_tenant "github.com/utkarshk014/procurement-system-be/src/internal/domain/tenant"
 	domain_trust "github.com/utkarshk014/procurement-system-be/src/internal/domain/trust"
@@ -15,6 +16,7 @@ import (
 	repository_company "github.com/utkarshk014/procurement-system-be/src/internal/repository/company"
 	repository_finyear "github.com/utkarshk014/procurement-system-be/src/internal/repository/finyear"
 	repository_institution "github.com/utkarshk014/procurement-system-be/src/internal/repository/institution"
+	repository_stock "github.com/utkarshk014/procurement-system-be/src/internal/repository/stock"
 	repository_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/repository/taxdetails"
 	repository_tenant "github.com/utkarshk014/procurement-system-be/src/internal/repository/tenant"
 	repository_trust "github.com/utkarshk014/procurement-system-be/src/internal/repository/trust"
@@ -33,6 +35,12 @@ type Repositories struct {
 	Branches      domain_codelist.Repository
 	Regions       domain_codelist.Repository
 	Institution   domain_institution.Repository
+
+	StockGroups        domain_stock.ListRepository
+	StockCategories    domain_stock.ListRepository
+	StockManufacturers domain_stock.ListRepository
+	StockUOMs          domain_stock.UOMRepository
+	StockItems         domain_stock.ItemRepository
 }
 
 // NewRepositories puts platform data in the control DB and business data in each tenant's DB.
@@ -48,5 +56,11 @@ func NewRepositories(dbm *database.Manager) *Repositories {
 		Branches:      repository_codelist.NewPostgresCodeListRepository(dbm, domain_codelist.Branch),
 		Regions:       repository_codelist.NewPostgresCodeListRepository(dbm, domain_codelist.Region),
 		Institution:   repository_institution.NewPostgresInstitutionRepository(dbm),
+
+		StockGroups:        repository_stock.NewPostgresListRepository(dbm, domain_stock.Group),
+		StockCategories:    repository_stock.NewPostgresListRepository(dbm, domain_stock.Category),
+		StockManufacturers: repository_stock.NewPostgresListRepository(dbm, domain_stock.Manufacturer),
+		StockUOMs:          repository_stock.NewPostgresUOMRepository(dbm),
+		StockItems:         repository_stock.NewPostgresItemRepository(dbm),
 	}
 }
