@@ -1,5 +1,5 @@
--- Written by us (sent as ITEM_DELETE_FIX.sql) and installed on live by the DBA on 15 Nov 2026,
--- replacing the sheet's delete_mst_stk_items. Postgres runs it after 005 so local and e2e match live.
+-- LOCAL FIX, not the DBA's text (sent as ITEM_DELETE_FIX.sql; NOT installed on live). On 15 Nov the
+-- DBA wrote his own item delete with a stock check, so this file goes once his text is in db/legacy.
 --
 -- pms.delete_mst_stk_items deletes the item while its row in pms.mst_stk_items_transactions
 -- (made by the insert trigger) still points at it, so every delete fails with a foreign key
