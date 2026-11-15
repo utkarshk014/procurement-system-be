@@ -236,6 +236,12 @@ call his procedures with the row's stored name (items: description and code), re
 table's lock, so the API only takes the id. Our earlier `ITEM_DELETE_FIX.sql` was never
 installed and is dropped.
 
+`006_stock_validate_items.sql` is the DBA's `fn_validate_mst_stk_items` of 15 Nov evening
+(verbatim, on live: adds duplicate checks). `007_stock_local_fixes.sql` is our **marked local
+fix** to it (sent as `FIX_fn_validate_mst_stk_items.sql`): category and manufacturer are
+checked only when given (his version refuses every item without them), and id 0 means a new
+item again. The API passes NULL for a new item, which both versions accept.
+
 ## 6. Setup wizard
 
 The walkthrough's wizard, in order. `GET /setup/status` returns `next_step`.
@@ -431,3 +437,4 @@ only place that maps them to HTTP.
 25. Stock: the DBA's tables have no unique constraints and his insert procedures accept a duplicate item description or code. We refuse duplicates (ignoring case) under a per-table lock; a unique index on `LOWER(TRIM(name))` would make the database enforce it too.
 26. Stock: `insert_mst_stk_items` accepts a NULL item type (`NULL NOT IN (...)` is not true), storing an item that is neither Goods nor Service. We require it.
 27. Done 15 Nov: every item needs a UOM and a group (Uncle: "UOM is must", "group is needed"). Enforced by the API; the table still allows NULL.
+28. Stock (15 Nov evening): the DBA's new `fn_validate_mst_stk_items` refuses every item without a category or manufacturer (`IF NOT EXISTS (... = NULL)`), though both are optional. Fixed locally in `007`, sent as `FIX_fn_validate_mst_stk_items.sql`. Until installed, items on live need a category and a manufacturer.

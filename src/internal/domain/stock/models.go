@@ -207,7 +207,8 @@ var ErrItemNotFound = domain.NotFound("Item not found")
 func ItemFunctionError(message string) error {
 	message = strings.TrimSpace(message)
 	lower := strings.ToLower(message)
-	if strings.Contains(lower, "record not found") || (strings.HasPrefix(message, "Item code ") && strings.HasSuffix(message, "does not exist")) {
+	if strings.Contains(lower, "record not found") || strings.Contains(lower, "not found for update") ||
+		(strings.HasPrefix(message, "Item code ") && strings.HasSuffix(message, "does not exist")) {
 		return ErrItemNotFound
 	}
 	field := ""
@@ -217,16 +218,18 @@ func ItemFunctionError(message string) error {
 	case strings.HasPrefix(message, "Item code"):
 		field = "item_code"
 	case strings.HasPrefix(message, "Item type"), strings.HasPrefix(message, "Invalid item type"),
-		strings.HasPrefix(message, "Goods/Service"), strings.HasPrefix(message, "Consumable"),
+		strings.HasPrefix(message, "Goods/Service"), strings.HasPrefix(message, "Consumable"), strings.HasPrefix(message, "Service cannot"),
 		strings.HasPrefix(message, "Service items"):
 		field = "goods_service_item"
 	case strings.HasPrefix(message, "Stock group"), strings.HasPrefix(message, "Invalid stock group"):
 		field = "grp_cd"
-	case strings.HasPrefix(message, "Stock category"), strings.HasPrefix(message, "Invalid category"):
+	case strings.HasPrefix(message, "Stock category"), strings.HasPrefix(message, "Invalid category"),
+		strings.HasPrefix(message, "Invalid stock category"):
 		field = "cat_cd"
 	case strings.HasPrefix(message, "Manufacturer"), strings.HasPrefix(message, "Invalid manufacturer"):
 		field = "manf_cd"
-	case strings.HasPrefix(message, "Unit of measurement"), strings.HasPrefix(message, "Invalid UOM"):
+	case strings.HasPrefix(message, "Unit of measurement"), strings.HasPrefix(message, "Invalid UOM"),
+		strings.HasPrefix(message, "Invalid unit of measurement"):
 		field = "uom_cd"
 	case strings.HasPrefix(message, "GST"):
 		field = "gst_percentage"

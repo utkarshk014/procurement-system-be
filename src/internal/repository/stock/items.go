@@ -129,6 +129,16 @@ func (r *itemRepository) problems(ctx context.Context, q pgutil.Querier, it *dom
 	return missing, taken, nil
 }
 
+// idOrNull passes a new item (id 0) as NULL: the DBA's validate function (15 Nov) treats any
+// non-NULL id, 0 included, as an existing item ("Item code not found for update"). His earlier
+// version treated 0 and NULL alike, so NULL works with both.
+func idOrNull(id int64) any {
+	if id == 0 {
+		return nil
+	}
+	return id
+}
+
 // args are the item's columns in the order both DBA routines take them (after item_cd for the
 // validate function).
 func args(it *domain_stock.Item) []any {
@@ -153,7 +163,7 @@ func (r *itemRepository) CheckWithFunction(ctx context.Context, it *domain_stock
 
 func (r *itemRepository) checkWithFunction(ctx context.Context, q pgutil.Querier, it *domain_stock.Item) (*domain_stock.FunctionResult, error) {
 	res := &domain_stock.FunctionResult{}
-	if err := q.QueryRow(ctx, `SELECT is_valid, message FROM pms.fn_validate_mst_stk_items($16::integer, `+itemTypes+`)`, append(args(it), it.ID)...).
+	if err := q.QueryRow(ctx, `SELECT is_valid, message FROM pms.fn_validate_mst_stk_items($16::integer, `+itemTypes+`)`, append(args(it), idOrNull(it.ID))...).
 		Scan(&res.Valid, &res.Message); err != nil {
 		return nil, domain.Internal("Could not run item validation", err)
 	}

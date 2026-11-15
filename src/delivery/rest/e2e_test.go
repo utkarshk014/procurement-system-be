@@ -1430,6 +1430,8 @@ func legacyScripts() []string {
 		filepath.Join(dir, "003_local_fixes.sql"),
 		filepath.Join(dir, "004_delete_objects.sql"),
 		filepath.Join(dir, "005_stock_objects.sql"),
+		filepath.Join(dir, "006_stock_validate_items.sql"),
+		filepath.Join(dir, "007_stock_local_fixes.sql"),
 	}
 }
 
