@@ -1003,8 +1003,23 @@ func TestEndToEnd(t *testing.T) {
 		require.Equal(t, 204, del.status, del.body)
 		assert.Equal(t, 404, api.do("GET", amcPath, esis, nil).status)
 		assert.Equal(t, 404, api.do("DELETE", amcPath, esis, nil).status)
+		// Stock ids are integer columns: an id past int32 is simply not found.
+		assert.Equal(t, 404, api.do("GET", base+"groups/3000000000", esis, nil).status)
+		assert.Equal(t, 404, api.do("DELETE", base+"items/3000000000", esis, nil).status)
 
-		_, err := dbm.Control().Exec(ctx, `UPDATE pms.mst_stk_items_transactions SET stk_ob = 5 WHERE item_cd = $1`, int(lays["id"].(float64)))
+		// An item saved before the code was required has none; delete says to add one first.
+		noCode := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "Old item", "item_code": "OLD-1", "goods_service_item": "Goods", "gst_applicable": false})
+		require.Equal(t, 201, noCode.status, noCode.body)
+		noCodeID := int(noCode.data()["id"].(float64))
+		_, err := dbm.Control().Exec(ctx, `UPDATE pms.mst_stk_items SET item_code = NULL WHERE item_cd = $1`, noCodeID)
+		require.NoError(t, err)
+		refused := api.do("DELETE", fmt.Sprintf("%sitems/%d", base, noCodeID), esis, nil)
+		assert.Equal(t, 409, refused.status, refused.body)
+		assert.Equal(t, "This item has no item code. Edit it to add a code, then delete it.", refused.errMessage())
+		_, err = dbm.Control().Exec(ctx, `DELETE FROM pms.mst_stk_items WHERE item_cd = $1`, noCodeID)
+		require.NoError(t, err)
+
+		_, err = dbm.Control().Exec(ctx, `UPDATE pms.mst_stk_items_transactions SET stk_ob = 5 WHERE item_cd = $1`, int(lays["id"].(float64)))
 		require.NoError(t, err)
 		kept := api.do("DELETE", fmt.Sprintf("%sitems/%d", base, int(lays["id"].(float64))), esis, nil)
 		assert.Equal(t, 409, kept.status)

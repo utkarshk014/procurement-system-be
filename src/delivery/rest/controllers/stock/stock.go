@@ -4,9 +4,11 @@ package controllers_stock
 import (
 	"context"
 	"log/slog"
+	"math"
 	"net/http"
 
 	rest_utils "github.com/utkarshk014/procurement-system-be/src/delivery/rest/utils"
+	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
 	domain_stock "github.com/utkarshk014/procurement-system-be/src/internal/domain/stock"
 )
 
@@ -66,7 +68,7 @@ func (c controller[In, Out]) List(w http.ResponseWriter, r *http.Request) error 
 }
 
 func (c controller[In, Out]) Get(w http.ResponseWriter, r *http.Request) error {
-	id, err := rest_utils.IntParam(r, "id", c.what)
+	id, err := idParam(r, c.what)
 	if err != nil {
 		return err
 	}
@@ -108,7 +110,7 @@ func (c controller[In, Out]) Create(w http.ResponseWriter, r *http.Request) erro
 
 // Update saves an edit (the whole body, as for create) and returns the row as stored.
 func (c controller[In, Out]) Update(w http.ResponseWriter, r *http.Request) error {
-	id, err := rest_utils.IntParam(r, "id", c.what)
+	id, err := idParam(r, c.what)
 	if err != nil {
 		return err
 	}
@@ -126,7 +128,7 @@ func (c controller[In, Out]) Update(w http.ResponseWriter, r *http.Request) erro
 
 // Delete removes a row (204); the DBA's procedure refuses one that is still used.
 func (c controller[In, Out]) Delete(w http.ResponseWriter, r *http.Request) error {
-	id, err := rest_utils.IntParam(r, "id", c.what)
+	id, err := idParam(r, c.what)
 	if err != nil {
 		return err
 	}
@@ -135,4 +137,17 @@ func (c controller[In, Out]) Delete(w http.ResponseWriter, r *http.Request) erro
 	}
 	rest_utils.NoContent(w)
 	return nil
+}
+
+// idParam reads the {id} URL parameter. Stock ids are integer columns, so an id past the int32
+// range cannot exist: NotFound, not a failed query.
+func idParam(r *http.Request, what string) (int64, error) {
+	id, err := rest_utils.IntParam(r, "id", what)
+	if err != nil {
+		return 0, err
+	}
+	if id > math.MaxInt32 {
+		return 0, domain.NotFound(what + " not found")
+	}
+	return id, nil
 }

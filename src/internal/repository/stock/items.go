@@ -3,6 +3,7 @@ package repository_stock
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
@@ -263,6 +264,11 @@ func (r *itemRepository) Delete(ctx context.Context, id int64) error {
 		}
 		if err != nil {
 			return domain.Internal("Could not load item", err)
+		}
+		// The DBA's delete matches on the code and refuses an empty one. Items saved before the
+		// code was required may have none: say what to do rather than pass on his refusal.
+		if strings.TrimSpace(code) == "" {
+			return domain.Conflict("This item has no item code. Edit it to add a code, then delete it.")
 		}
 		if _, err := tx.Exec(ctx, `CALL pms.delete_mst_stk_items($1::integer, $2::varchar, $3::varchar)`, id, desc, code); err != nil {
 			return deleteError(err, "Item", domain_stock.ErrItemNotFound)
