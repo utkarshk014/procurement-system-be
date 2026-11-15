@@ -114,6 +114,8 @@ func TestPrepareItemRules(t *testing.T) {
 		{"spare service", func(in *domain_stock.ItemInput) { in.Type, in.Consumable, in.Spare = "Service", false, true }, "item_is_spare", "applies to goods only"},
 		{"serial service", func(in *domain_stock.ItemInput) { in.Type, in.Consumable, in.TrackSerial = "Service", false, true }, "track_serial", "applies to goods only"},
 		{"zero group id", func(in *domain_stock.ItemInput) { in.GroupID = i64(0) }, "grp_cd", "does not exist"},
+		{"no group", func(in *domain_stock.ItemInput) { in.GroupID = nil }, "grp_cd", "is required"},
+		{"no UOM", func(in *domain_stock.ItemInput) { in.UOMID = nil }, "uom_cd", "is required"},
 		{"short HSN", func(in *domain_stock.ItemInput) { in.HSNCode = "190" }, "gst_hsn_code", "must be 4, 6 or 8 digits"},
 		{"HSN letters", func(in *domain_stock.ItemInput) { in.HSNCode = "19A5" }, "gst_hsn_code", "must be 4, 6 or 8 digits"},
 		{"missing SGST", func(in *domain_stock.ItemInput) { in.SGST = nil }, "sgst_percentage", "is required when GST applies"},

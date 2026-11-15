@@ -496,7 +496,8 @@ send only the ids.
 |---|---|
 | `item_desc` | required, spaces tidied, ≤ 250, unique ignoring case and spaces (`409`) |
 | `item_code` | optional, upper-cased, ≤ 20, letters, digits and `- / .`, unique (`409`) |
-| `grp_cd` · `cat_cd` · `manf_cd` · `uom_cd` | optional; each must exist (`422`, *does not exist*) |
+| `grp_cd` · `uom_cd` | **required** (Uncle, 15 Nov); must exist (`422`, *does not exist*) |
+| `cat_cd` · `manf_cd` | optional; must exist when sent |
 | `goods_service_item` | required, `Goods` or `Service` (any case) |
 | `item_consumable` · `item_is_spare` · `track_serial` | booleans; goods only (`422`, *applies to goods only*) |
 | `gst_applicable` | boolean, default `true` |

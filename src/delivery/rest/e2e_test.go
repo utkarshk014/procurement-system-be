@@ -967,7 +967,7 @@ func TestEndToEnd(t *testing.T) {
 		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT count(*) FROM pms.mst_stk_items_transactions WHERE item_cd = $1`, int(lays["id"].(float64))).Scan(&stockRows))
 		assert.Equal(t, 1, stockRows, "the DBA's trigger made the stock row")
 
-		dup := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "LAYS 50G", "item_code": "LAY-50", "goods_service_item": "Goods", "gst_applicable": false})
+		dup := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "LAYS 50G", "item_code": "LAY-50", "goods_service_item": "Goods", "gst_applicable": false})
 		assert.Equal(t, 409, dup.status, dup.body)
 		assert.Len(t, dup.fieldErrors(), 2, "description and code are both taken")
 		ghost := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "Ghost", "grp_cd": 999, "uom_cd": 999, "goods_service_item": "Goods", "gst_applicable": false})
@@ -975,11 +975,13 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, map[string]string{"grp_cd": "does not exist", "uom_cd": "does not exist"}, ghost.fieldErrors())
 		bad := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "", "goods_service_item": "Both", "gst_hsn_code": "12", "gst_percentage": 12, "sgst_percentage": 9, "cgst_percentage": 9})
 		assert.Equal(t, 422, bad.status)
-		assert.Len(t, bad.fieldErrors(), 4, "every problem at once")
-		serial := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "AMC visit", "goods_service_item": "Service", "track_serial": true, "gst_applicable": false})
+		assert.Len(t, bad.fieldErrors(), 6, "every problem at once")
+		assert.Equal(t, "is required", bad.fieldErrors()["grp_cd"], "group is required (Uncle)")
+		assert.Equal(t, "is required", bad.fieldErrors()["uom_cd"], "UOM is required (Uncle)")
+		serial := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "AMC visit", "goods_service_item": "Service", "track_serial": true, "gst_applicable": false})
 		assert.Equal(t, "applies to goods only", serial.fieldErrors()["track_serial"])
 
-		amc := api.do("POST", base+"items/", esis, map[string]any{"item_desc": "AMC visit", "goods_service_item": "Service", "gst_hsn_code": "998719", "gst_percentage": 18, "sgst_percentage": 9, "cgst_percentage": 9})
+		amc := api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "AMC visit", "goods_service_item": "Service", "gst_hsn_code": "998719", "gst_percentage": 18, "sgst_percentage": 9, "cgst_percentage": 9})
 		require.Equal(t, 201, amc.status, amc.body)
 		assert.Len(t, api.do("GET", base+"items/", esis, nil).list(), 2)
 
@@ -996,7 +998,7 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, "Cannot delete! Item has stock or purchase records", kept.errMessage())
 
 		statuses := concurrently(4, func(i int) int {
-			return api.do("POST", base+"items/", esis, map[string]any{"item_desc": "Race item", "goods_service_item": "Goods", "gst_applicable": false}).status
+			return api.do("POST", base+"items/", esis, map[string]any{"grp_cd": ids["groups"], "uom_cd": nos.data()["id"], "item_desc": "Race item", "goods_service_item": "Goods", "gst_applicable": false}).status
 		})
 		assert.Equal(t, []int{201, 409, 409, 409}, statuses)
 	})

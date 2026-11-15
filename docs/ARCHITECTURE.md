@@ -430,4 +430,4 @@ only place that maps them to HTTP.
 24. Stock: no update procedures for group, category, manufacturer, UOM or items, and no delete for group, category, manufacturer or UOM, so nothing can be edited (the old screens have Edit).
 25. Stock: the DBA's tables have no unique constraints and his insert procedures accept a duplicate item description or code. We refuse duplicates (ignoring case) under a per-table lock; a unique index on `LOWER(TRIM(name))` would make the database enforce it too.
 26. Stock: `insert_mst_stk_items` accepts a NULL item type (`NULL NOT IN (...)` is not true), storing an item that is neither Goods nor Service. We require it.
-27. Stock: should an item need a UOM and a group? Built: optional, as the table allows.
+27. Done 15 Nov: every item needs a UOM and a group (Uncle: "UOM is must", "group is needed"). Enforced by the API; the table still allows NULL.

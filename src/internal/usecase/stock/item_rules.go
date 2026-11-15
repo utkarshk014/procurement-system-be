@@ -24,7 +24,8 @@ var (
 // problems come back together: a description; type Goods or Service; a service is never
 // consumable, a spare or serial-tracked; with GST, all three percentages and GST = SGST + CGST;
 // without GST, no percentages. Ours on top: the table's lengths, item code and HSN format,
-// percentages from 0 to 100 with at most 2 decimals (NUMERIC(5,2)), and positive link ids.
+// percentages from 0 to 100 with at most 2 decimals (NUMERIC(5,2)), positive link ids, and a
+// group and a UOM on every item (Uncle, 15 Nov: "UOM is must", "group is needed").
 func PrepareItem(in domain_stock.ItemInput) (*domain_stock.Item, error) {
 	in.Desc = domain_stock.NormalizeName(in.Desc)
 	in.Code = strings.ToUpper(strings.TrimSpace(in.Code))
@@ -59,6 +60,13 @@ func PrepareItem(in domain_stock.ItemInput) (*domain_stock.Item, error) {
 		if in.TrackSerial {
 			add("track_serial", "applies to goods only")
 		}
+	}
+	// Group and UOM are required (Uncle, 15 Nov); category and manufacturer are optional.
+	if in.GroupID == nil {
+		add("grp_cd", "is required")
+	}
+	if in.UOMID == nil {
+		add("uom_cd", "is required")
 	}
 	for _, link := range domain_stock.ItemLinks(in.GroupID, in.CategoryID, in.ManufacturerID, in.UOMID) {
 		if link.ID != nil && *link.ID <= 0 {
