@@ -95,3 +95,8 @@ func MethodNotAllowed(msg string) error {
 func Internal(msg string, err error) error {
 	return &AppError{Kind: KindInternal, Message: msg, Err: err}
 }
+
+// Unavailable is a 503: a service the request needs is not set up or not reachable.
+func Unavailable(msg string) error {
+	return &AppError{Kind: KindUnavailable, Message: msg}
+}

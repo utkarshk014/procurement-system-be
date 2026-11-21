@@ -22,6 +22,7 @@ import (
 	controllers_stock "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/stock"
 	controllers_taxdetails "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/taxdetails"
 	controllers_trust "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/trust"
+	controllers_vendor "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/vendor"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/middlewares"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/routers"
 	rest_utils "github.com/utkarshk014/procurement-system-be/src/delivery/rest/utils"
@@ -76,6 +77,7 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 		Items:         controllers_stock.NewItemController(usecases.StockItems, logger),
 	}, logger)
 	routers.SetInstitutionRoutes(r, auth, controllers_institution.NewInstitutionController(usecases, logger), logger)
+	routers.SetVendorRoutes(r, auth, controllers_vendor.NewVendorController(usecases.Vendors, logger), logger)
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
 		rest_utils.WriteError(w, r, logger, domain.NotFound("Route not found"))

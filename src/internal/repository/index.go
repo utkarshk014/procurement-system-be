@@ -11,6 +11,7 @@ import (
 	domain_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/domain/taxdetails"
 	domain_tenant "github.com/utkarshk014/procurement-system-be/src/internal/domain/tenant"
 	domain_trust "github.com/utkarshk014/procurement-system-be/src/internal/domain/trust"
+	domain_vendor "github.com/utkarshk014/procurement-system-be/src/internal/domain/vendor"
 	repository_auth "github.com/utkarshk014/procurement-system-be/src/internal/repository/auth"
 	repository_codelist "github.com/utkarshk014/procurement-system-be/src/internal/repository/codelist"
 	repository_company "github.com/utkarshk014/procurement-system-be/src/internal/repository/company"
@@ -20,6 +21,7 @@ import (
 	repository_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/repository/taxdetails"
 	repository_tenant "github.com/utkarshk014/procurement-system-be/src/internal/repository/tenant"
 	repository_trust "github.com/utkarshk014/procurement-system-be/src/internal/repository/trust"
+	repository_vendor "github.com/utkarshk014/procurement-system-be/src/internal/repository/vendor"
 	"github.com/utkarshk014/procurement-system-be/src/packages/database"
 )
 
@@ -41,6 +43,8 @@ type Repositories struct {
 	StockManufacturers domain_stock.ListRepository
 	StockUOMs          domain_stock.UOMRepository
 	StockItems         domain_stock.ItemRepository
+
+	Vendors domain_vendor.Repository
 }
 
 // NewRepositories puts platform data in the control DB and business data in each tenant's DB.
@@ -62,5 +66,7 @@ func NewRepositories(dbm *database.Manager) *Repositories {
 		StockManufacturers: repository_stock.NewPostgresListRepository(dbm, domain_stock.Manufacturer),
 		StockUOMs:          repository_stock.NewPostgresUOMRepository(dbm),
 		StockItems:         repository_stock.NewPostgresItemRepository(dbm),
+
+		Vendors: repository_vendor.NewPostgresVendorRepository(dbm),
 	}
 }

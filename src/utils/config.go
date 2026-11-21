@@ -44,6 +44,14 @@ type Config struct {
 	CORSAllowedOrigins []string      `env:"CORS_ALLOWED_ORIGINS" envSeparator:"," envDefault:"http://localhost:3000"`
 	RequestTimeout     time.Duration `env:"REQUEST_TIMEOUT" envDefault:"15s"`
 	LoginRateLimit     int           `env:"LOGIN_RATE_LIMIT_PER_MINUTE" envDefault:"10"`
+
+	// Vendor documents go to this private S3 bucket. Without S3_BUCKET, uploads answer 503.
+	// S3_ENDPOINT is only for an S3-compatible store (MinIO in tests); leave it empty for AWS.
+	S3Bucket    string `env:"S3_BUCKET"`
+	S3Region    string `env:"S3_REGION" envDefault:"ap-south-1"`
+	S3Endpoint  string `env:"S3_ENDPOINT"`
+	S3AccessKey string `env:"AWS_ACCESS_KEY_ID"`
+	S3SecretKey string `env:"AWS_SECRET_ACCESS_KEY"`
 }
 
 // NewConfig loads .env (if present) and parses the environment.

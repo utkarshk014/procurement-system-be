@@ -68,3 +68,12 @@ services:
         value: "0"
       - key: LOGIN_RATE_LIMIT_PER_MINUTE
         value: "10"
+      # Vendor documents: the private S3 bucket and the app's IAM user (set in the dashboard).
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        value: ap-south-1
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false

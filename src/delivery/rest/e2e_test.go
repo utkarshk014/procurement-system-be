@@ -24,6 +24,13 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/johannesboyne/gofakes3"
+	"github.com/johannesboyne/gofakes3/backend/s3mem"
+
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
 	domain_auth "github.com/utkarshk014/procurement-system-be/src/internal/domain/auth"
@@ -59,6 +66,7 @@ func TestEndToEnd(t *testing.T) {
 	dsnB := createTenantDatabase(t, ctx, dsn, "esis_b")
 	dsnC := createTenantDatabase(t, ctx, dsn, "esis_c")
 	const unreachableDSN = "postgres://pms:pms@127.0.0.1:1/nowhere?sslmode=disable&connect_timeout=1"
+	s3Endpoint, s3Client := startS3(t, ctx)
 
 	cfg := &utils.Config{
 		AppEnv:             "test",
@@ -74,6 +82,11 @@ func TestEndToEnd(t *testing.T) {
 		RequestTimeout:     15 * time.Second,
 		LoginRateLimit:     1000,
 		FYFutureYears:      1,
+		S3Bucket:           e2eBucket,
+		S3Region:           "ap-south-1",
+		S3Endpoint:         s3Endpoint,
+		S3AccessKey:        s3User,
+		S3SecretKey:        s3Password,
 	}
 
 	_, err = database.NewManager(ctx, dsn, map[string]string{"esis": dsn, "alias": dsn + "&application_name=x"})
@@ -1049,6 +1062,180 @@ func TestEndToEnd(t *testing.T) {
 		assert.Equal(t, []int{201, 409, 409, 409}, statuses)
 	})
 
+	t.Run("vendors: details, item groups, financials, certificates and files", func(t *testing.T) {
+		const base = "/api/v1/vendors/"
+		grp := api.do("POST", "/api/v1/stock/groups/", esis, map[string]any{"name": "Computers"})
+		require.Equal(t, 201, grp.status, grp.body)
+		grp2 := api.do("POST", "/api/v1/stock/groups/", esis, map[string]any{"name": "Printers"})
+		require.Equal(t, 201, grp2.status, grp2.body)
+		g1, g2 := grp.data()["id"].(float64), grp2.data()["id"].(float64)
+
+		empty := api.do("GET", base, esis, nil)
+		require.Equal(t, 200, empty.status, empty.body)
+		assert.NotNil(t, empty.list())
+		assert.Equal(t, 403, api.do("GET", base, root, nil).status)
+		opts := api.do("GET", base+"options", esis, nil)
+		require.Equal(t, 200, opts.status)
+		assert.Contains(t, opts.data()["vendor_types"], "Proprietor")
+
+		vendor := map[string]any{
+			"name": "  ABC   Computers ", "address": "12 MG Road", "city": "Bengaluru", "state": "Karnataka", "pin": "560001",
+			"vendor_type": "proprietor", "mobile": "080 2345 6789", "email": "Sales@ABC.in", "pan": "abcde1234f",
+			"gstin": "29abcde1234f1zw", "tan": "blra12345b", "supply_type": "sales", "is_manufacturer": true,
+			"company_since": "1998", "reg_date": "2020-04-01", "correspond_mobile": "+91 98450 12345",
+			"contacts": []any{map[string]any{"person": "Ravi", "designation": "Manager", "mobile": "9845012345", "email": "ravi@abc.in"}},
+			"grp_cds":  []any{g1, g2},
+		}
+		ok := api.do("POST", base+"validate", esis, vendor)
+		require.Equal(t, 200, ok.status, ok.body)
+		assert.Len(t, api.do("GET", base, esis, nil).list(), 0, "validate writes nothing")
+
+		res := api.do("POST", base, esis, vendor)
+		require.Equal(t, 201, res.status, res.body)
+		v := res.data()
+		id := int(v["id"].(float64))
+		path := fmt.Sprintf("%s%d", base, id)
+		assert.Equal(t, "ABC Computers", v["name"])
+		assert.Equal(t, "ABCDE1234F", v["pan"])
+		assert.Equal(t, "Karnataka", v["gstin_state"], "from the GSTIN")
+		assert.Equal(t, "Proprietor", v["vendor_type"])
+		assert.Equal(t, "2020-04-01", v["reg_date"])
+		assert.Equal(t, "Ravi", v["contacts"].([]any)[0].(map[string]any)["person"])
+		assert.Len(t, v["item_groups"], 2)
+		assert.Len(t, v["financials"], 0)
+		assert.Len(t, v["certificates"], 9, "every certificate slot, empty")
+
+		// Duplicates: ours report every taken field at once; his unique indexes back them up.
+		dup := api.do("POST", base, esis, map[string]any{"name": "abc computers", "pan": "ABCDE1234F", "gstin": "29ABCDE1234F1ZW"})
+		assert.Equal(t, 409, dup.status, dup.body)
+		assert.Len(t, dup.fieldErrors(), 3)
+		bad := api.do("POST", base, esis, map[string]any{"name": "", "pan": "X", "mobile": "12", "grp_cds": []any{999}})
+		assert.Equal(t, 422, bad.status, bad.body)
+		assert.Contains(t, bad.fieldErrors(), "pan")
+		noGroup := api.do("POST", base, esis, map[string]any{"name": "Ghost Group Vendor", "grp_cds": []any{999}})
+		assert.Equal(t, 422, noGroup.status)
+		assert.Contains(t, noGroup.fieldErrors()["grp_cds"], "does not exist")
+
+		// Edit with lower-case PAN (his update alone refuses it) and a changed group list.
+		edit := clone(vendor)
+		edit["name"], edit["pan"], edit["gstin"], edit["mobile"], edit["grp_cds"] = "ABC Computers Pvt", "abcde1234f", "", "", []any{g2}
+		upd := api.do("PUT", path, esis, edit)
+		require.Equal(t, 200, upd.status, upd.body)
+		assert.Equal(t, "ABC Computers Pvt", upd.data()["name"])
+		assert.Equal(t, "", upd.data()["gstin"])
+		assert.Equal(t, "", upd.data()["gstin_state"])
+		assert.Equal(t, "Printers", upd.data()["item_groups"].([]any)[0].(map[string]any)["item_group"])
+		var mobileNull bool
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT mobile IS NULL FROM pms.mst_vendor WHERE vendor_cd = $1`, id).Scan(&mobileNull))
+		assert.True(t, mobileNull, "an emptied field is stored as NULL, not ''")
+		assert.Equal(t, 404, api.do("PUT", base+"999", esis, edit).status)
+
+		other := api.do("POST", base, esis, map[string]any{"name": "Other Vendor"})
+		require.Equal(t, 201, other.status, other.body)
+		otherID := int(other.data()["id"].(float64))
+		clash := api.do("PUT", fmt.Sprintf("%s%d", base, otherID), esis, map[string]any{"name": "abc computers pvt"})
+		assert.Equal(t, 409, clash.status)
+
+		// A stock group a vendor supplies cannot be deleted.
+		inUse := api.do("DELETE", fmt.Sprintf("/api/v1/stock/groups/%d", int(g2)), esis, nil)
+		assert.Equal(t, 409, inUse.status, inUse.body)
+
+		// Financials.
+		fin := map[string]any{"fin_year": "2025-2026", "fin_turnover_declared": 12500000.5, "fin_profit_declared": -2000, "fin_itr_no": "ack1", "fin_itr_date": "2026-07-31"}
+		f1 := api.do("POST", path+"/financials", esis, fin)
+		require.Equal(t, 201, f1.status, f1.body)
+		assert.Equal(t, "ACK1", f1.data()["fin_itr_no"])
+		assert.Equal(t, 409, api.do("POST", path+"/financials", esis, fin).status)
+		badFin := api.do("POST", path+"/financials", esis, map[string]any{"fin_year": "2025-2027", "fin_turnover_declared": -1})
+		assert.Equal(t, 422, badFin.status)
+		assert.Len(t, badFin.fieldErrors(), 2)
+		f1u := api.do("PUT", path+"/financials/2025-2026", esis, map[string]any{"fin_turnover_declared": 13000000})
+		require.Equal(t, 200, f1u.status, f1u.body)
+		assert.Equal(t, 13000000.0, f1u.data()["fin_turnover_declared"])
+		assert.Nil(t, f1u.data()["fin_itr_date"], "the whole year is replaced")
+		assert.Equal(t, 404, api.do("PUT", path+"/financials/2019-2020", esis, map[string]any{}).status)
+		assert.Equal(t, 404, api.do("PUT", path+"/financials/junk", esis, map[string]any{}).status)
+		assert.Equal(t, 404, api.do("POST", base+"999/financials", esis, fin).status)
+		f2 := api.do("POST", path+"/financials", esis, map[string]any{"fin_year": "2024-2025"})
+		require.Equal(t, 201, f2.status, f2.body)
+		assert.Equal(t, 204, api.do("DELETE", path+"/financials/2024-2025", esis, nil).status)
+		assert.Equal(t, 404, api.do("DELETE", path+"/financials/2024-2025", esis, nil).status)
+
+		// Files: the type comes from the content, the key is the vendor's own.
+		pdf := []byte("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n")
+		up := api.upload(path+"/files", esis, "GST certificate.pdf", pdf)
+		require.Equal(t, 201, up.status, up.body)
+		key := up.data()["key"].(string)
+		assert.True(t, strings.HasPrefix(key, fmt.Sprintf("esis/vendors/%d/", id)), key)
+		assert.True(t, strings.HasSuffix(key, "-GST-certificate.pdf"), key)
+		notPDF := api.upload(path+"/files", esis, "virus.pdf", []byte("MZ this is not a pdf at all"))
+		assert.Equal(t, 422, notPDF.status, notPDF.body)
+		assert.Equal(t, 404, api.upload(base+"999/files", esis, "a.pdf", pdf).status)
+
+		link := api.do("GET", path+"/files/url?key="+key, esis, nil)
+		require.Equal(t, 200, link.status, link.body)
+		got, err := http.Get(link.data()["url"].(string))
+		require.NoError(t, err)
+		body, _ := io.ReadAll(got.Body)
+		got.Body.Close()
+		assert.Equal(t, pdf, body, "the signed link downloads the file")
+		assert.Equal(t, 404, api.do("GET", fmt.Sprintf("%s%d/files/url?key=%s", base, otherID, key), esis, nil).status,
+			"another vendor's id cannot open this vendor's file")
+
+		// Certificates: a key from another vendor is refused; replacing a file deletes the old one.
+		foreign := api.upload(fmt.Sprintf("%s%d/files", base, otherID), esis, "x.pdf", pdf)
+		require.Equal(t, 201, foreign.status)
+		refused := api.do("PUT", path+"/certificates", esis, map[string]any{"gst": map[string]any{"file": foreign.data()["key"]}})
+		assert.Equal(t, 422, refused.status)
+		noCaption := api.do("PUT", path+"/certificates", esis, map[string]any{"oth_1": map[string]any{"file": key}})
+		assert.Equal(t, 422, noCaption.status)
+		assert.Contains(t, noCaption.fieldErrors(), "oth_1.caption")
+		certs := api.do("PUT", path+"/certificates", esis, map[string]any{"gst": map[string]any{"file": key}})
+		require.Equal(t, 200, certs.status, certs.body)
+		assert.Equal(t, key, certs.data()["gst"].(map[string]any)["file"])
+		var uploaded bool
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT gst_uploaded FROM pms.mst_vendor_certificates WHERE vendor_cd = $1`, id).Scan(&uploaded))
+		assert.True(t, uploaded)
+
+		up2 := api.upload(path+"/files", esis, "gst-new.pdf", pdf)
+		require.Equal(t, 201, up2.status)
+		key2 := up2.data()["key"].(string)
+		certs = api.do("PUT", path+"/certificates", esis, map[string]any{"gst": map[string]any{"file": key2}, "oth_1": map[string]any{"file": key, "caption": "ISO 9001"}})
+		require.Equal(t, 200, certs.status, certs.body)
+		certs = api.do("PUT", path+"/certificates", esis, map[string]any{"gst": map[string]any{"file": key2}})
+		require.Equal(t, 200, certs.status, certs.body)
+		assert.False(t, s3Exists(t, ctx, s3Client, key), "a file no certificate points at is deleted")
+		assert.True(t, s3Exists(t, ctx, s3Client, key2))
+
+		itr := api.upload(path+"/files", esis, "itr.pdf", pdf)
+		require.Equal(t, 201, itr.status)
+		withITR := api.do("PUT", path+"/financials/2025-2026", esis, map[string]any{"fin_itr_s3_bucket_reference": itr.data()["key"]})
+		require.Equal(t, 200, withITR.status, withITR.body)
+
+		detail := api.do("GET", path, esis, nil)
+		require.Equal(t, 200, detail.status)
+		assert.Len(t, detail.data()["financials"], 1)
+
+		// Delete removes the vendor, its rows and its files.
+		require.Equal(t, 204, api.do("DELETE", path, esis, nil).status)
+		assert.Equal(t, 404, api.do("GET", path, esis, nil).status)
+		assert.Equal(t, 404, api.do("DELETE", path, esis, nil).status)
+		assert.False(t, s3Exists(t, ctx, s3Client, key2))
+		assert.False(t, s3Exists(t, ctx, s3Client, itr.data()["key"].(string)))
+		var left int
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT (SELECT count(*) FROM pms.mst_vendor_item_group WHERE vendor_cd = $1)
+			+ (SELECT count(*) FROM pms.mst_vendor_financials WHERE vendor_cd = $1)
+			+ (SELECT count(*) FROM pms.mst_vendor_certificates WHERE vendor_cd = $1)`, id).Scan(&left))
+		assert.Zero(t, left)
+		assert.Equal(t, 204, api.do("DELETE", fmt.Sprintf("/api/v1/stock/groups/%d", int(g2)), esis, nil).status, "free once no vendor supplies it")
+
+		// Two creates of one name at the same moment: one wins.
+		statuses := concurrently(6, func(i int) int {
+			return api.do("POST", base, esis, map[string]any{"name": "Race Vendor"}).status
+		})
+		assert.Equal(t, []int{201, 409, 409, 409, 409, 409}, statuses)
+	})
+
 	t.Run("institutions import from .xlsx: dry run, import, re-import, bad files", func(t *testing.T) {
 		// The old system's own headers, a date cell, a number cell for a mobile, and every kind of bad row.
 		file := xlsxFile(t, func(f *excelize.File) {
@@ -1449,6 +1636,7 @@ func legacyScripts() []string {
 		filepath.Join(dir, "003_local_fixes.sql"),
 		filepath.Join(dir, "004_delete_objects.sql"),
 		filepath.Join(dir, "005_stock_objects.sql"),
+		filepath.Join(dir, "006_vendor_objects.sql"),
 	}
 }
 
@@ -1488,4 +1676,32 @@ func xlsxFile(t *testing.T, fill func(f *excelize.File)) []byte {
 	var buf bytes.Buffer
 	require.NoError(t, f.Write(&buf))
 	return buf.Bytes()
+}
+
+const (
+	e2eBucket  = "pms-e2e"
+	s3User     = "e2e-key"
+	s3Password = "e2e-secret"
+)
+
+// startS3 runs an in-process S3-compatible store with an empty bucket and returns its
+// endpoint and a client.
+func startS3(t *testing.T, ctx context.Context) (string, *s3.Client) {
+	t.Helper()
+	fake := httptest.NewServer(gofakes3.New(s3mem.New()).Server())
+	t.Cleanup(fake.Close)
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion("ap-south-1"),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(s3User, s3Password, "")))
+	require.NoError(t, err)
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) { o.BaseEndpoint = aws.String(fake.URL); o.UsePathStyle = true })
+	_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(e2eBucket)})
+	require.NoError(t, err)
+	return fake.URL, client
+}
+
+// s3Exists reports whether key is in the test bucket.
+func s3Exists(t *testing.T, ctx context.Context, c *s3.Client, key string) bool {
+	t.Helper()
+	_, err := c.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(e2eBucket), Key: aws.String(key)})
+	return err == nil
 }

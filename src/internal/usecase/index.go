@@ -2,6 +2,7 @@
 package usecase
 
 import (
+	"context"
 	domain_stock "github.com/utkarshk014/procurement-system-be/src/internal/domain/stock"
 	usecase_stock "github.com/utkarshk014/procurement-system-be/src/internal/usecase/stock"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	domain_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/domain/taxdetails"
 	domain_tenant "github.com/utkarshk014/procurement-system-be/src/internal/domain/tenant"
 	domain_trust "github.com/utkarshk014/procurement-system-be/src/internal/domain/trust"
+	domain_vendor "github.com/utkarshk014/procurement-system-be/src/internal/domain/vendor"
 	"github.com/utkarshk014/procurement-system-be/src/internal/repository"
 	usecase_auth "github.com/utkarshk014/procurement-system-be/src/internal/usecase/auth"
 	usecase_codelist "github.com/utkarshk014/procurement-system-be/src/internal/usecase/codelist"
@@ -25,6 +27,8 @@ import (
 	usecase_taxdetails "github.com/utkarshk014/procurement-system-be/src/internal/usecase/taxdetails"
 	usecase_tenant "github.com/utkarshk014/procurement-system-be/src/internal/usecase/tenant"
 	usecase_trust "github.com/utkarshk014/procurement-system-be/src/internal/usecase/trust"
+	usecase_vendor "github.com/utkarshk014/procurement-system-be/src/internal/usecase/vendor"
+	"github.com/utkarshk014/procurement-system-be/src/packages/storage"
 	"github.com/utkarshk014/procurement-system-be/src/utils"
 )
 
@@ -47,6 +51,8 @@ type Usecases struct {
 	StockManufacturers domain_stock.ListUsecase
 	StockUOMs          domain_stock.UOMUsecase
 	StockItems         domain_stock.ItemUsecase
+
+	Vendors domain_vendor.Usecase
 }
 
 // NewUsecases builds the use cases.
@@ -54,6 +60,20 @@ func NewUsecases(cfg *utils.Config, repos *repository.Repositories, databases do
 	tokens := usecase_auth.NewJWTIssuer(cfg.JWTAccessSecret, cfg.JWTRefreshSecret, cfg.JWTIssuer,
 		cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
 	auth := usecase_auth.NewAuthUsecase(repos.Auth, tokens, logger)
+
+	// Vendor documents: without a bucket the rest of the app works and uploads answer 503.
+	var files domain_vendor.FileStore
+	if cfg.S3Bucket != "" {
+		store, err := storage.NewS3(context.Background(), storage.S3Config{
+			Bucket: cfg.S3Bucket, Region: cfg.S3Region, Endpoint: cfg.S3Endpoint,
+			AccessKey: cfg.S3AccessKey, SecretKey: cfg.S3SecretKey,
+		})
+		if err != nil {
+			logger.Error("file storage is not available, vendor uploads will fail", "error", err)
+		} else {
+			files = store
+		}
+	}
 
 	return &Usecases{
 		Auth:          auth,
@@ -76,5 +96,7 @@ func NewUsecases(cfg *utils.Config, repos *repository.Repositories, databases do
 		StockManufacturers: usecase_stock.NewListUsecase(domain_stock.Manufacturer, repos.StockManufacturers, logger),
 		StockUOMs:          usecase_stock.NewUOMUsecase(repos.StockUOMs, logger),
 		StockItems:         usecase_stock.NewItemUsecase(repos.StockItems, logger),
+
+		Vendors: usecase_vendor.NewVendorUsecase(repos.Vendors, files, cfg.Location(), logger),
 	}
 }

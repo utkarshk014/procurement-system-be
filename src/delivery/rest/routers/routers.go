@@ -19,6 +19,7 @@ import (
 	controllers_stock "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/stock"
 	controllers_taxdetails "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/taxdetails"
 	controllers_trust "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/trust"
+	controllers_vendor "github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/vendor"
 	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/middlewares"
 	rest_utils "github.com/utkarshk014/procurement-system-be/src/delivery/rest/utils"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
@@ -159,5 +160,27 @@ func SetStockRoutes(r chi.Router, auth middlewares.AuthMiddleware, c StockContro
 				r.Delete("/{id}", rest_utils.Wrap(logger, ctl.Delete))
 			})
 		}
+	})
+}
+
+// SetVendorRoutes: the vendor master, tenant admins only. A vendor is saved with its item groups;
+// its financial years and certificates are saved separately once it exists. Documents are
+// uploaded first (POST /{id}/files) and their key saved in a certificate or financial year.
+func SetVendorRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controllers_vendor.VendorController, logger *slog.Logger) {
+	r.Route("/api/v1/vendors", func(r chi.Router) {
+		r.Use(auth.VerifyToken, auth.RequireRole(domain.RoleTenantAdmin))
+		r.Get("/", rest_utils.Wrap(logger, c.List))
+		r.Post("/", rest_utils.Wrap(logger, c.Create))
+		r.Get("/options", rest_utils.Wrap(logger, c.Options))
+		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
+		r.Get("/{id}", rest_utils.Wrap(logger, c.Get))
+		r.Put("/{id}", rest_utils.Wrap(logger, c.Update))
+		r.Delete("/{id}", rest_utils.Wrap(logger, c.Delete))
+		r.Post("/{id}/financials", rest_utils.Wrap(logger, c.CreateFinancial))
+		r.Put("/{id}/financials/{finYear}", rest_utils.Wrap(logger, c.UpdateFinancial))
+		r.Delete("/{id}/financials/{finYear}", rest_utils.Wrap(logger, c.DeleteFinancial))
+		r.Put("/{id}/certificates", rest_utils.Wrap(logger, c.SaveCertificates))
+		r.Post("/{id}/files", rest_utils.Wrap(logger, c.UploadFile))
+		r.Get("/{id}/files/url", rest_utils.Wrap(logger, c.FileURL))
 	})
 }

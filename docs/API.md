@@ -81,6 +81,18 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | POST | `/api/v1/institutions` | tenant_admin | Add an institution (201) |
 | POST | `/api/v1/institutions/import` | tenant_admin | Check (`?dry_run=true`) or import an .xlsx of institutions |
 | GET | `/api/v1/institutions/import/template` | tenant_admin | The import template (.xlsx) |
+| GET | `/api/v1/vendors` | tenant_admin | Every vendor with its item groups, sorted by name (`[]` when none) |
+| GET | `/api/v1/vendors/options` | tenant_admin | Vendor types, supply types, certificate slots |
+| GET | `/api/v1/vendors/{id}` | tenant_admin | One vendor with its financials and certificates (404 if unknown) |
+| POST | `/api/v1/vendors/validate` | tenant_admin | Dry-run a create |
+| POST | `/api/v1/vendors` | tenant_admin | Add a vendor with its item groups (201) |
+| PUT | `/api/v1/vendors/{id}` | tenant_admin | Save a vendor and replace its item groups (200) |
+| DELETE | `/api/v1/vendors/{id}` | tenant_admin | Delete a vendor, its financials, certificates and files (204) |
+| POST | `/api/v1/vendors/{id}/financials` | tenant_admin | Add a financial year (201) |
+| PUT · DELETE | `/api/v1/vendors/{id}/financials/{fin_year}` | tenant_admin | Replace (200) or delete (204) a year |
+| PUT | `/api/v1/vendors/{id}/certificates` | tenant_admin | Save the certificates (200) |
+| POST | `/api/v1/vendors/{id}/files` | tenant_admin | Upload a PDF, JPG or PNG (201), returns its key |
+| GET | `/api/v1/vendors/{id}/files/url?key=` | tenant_admin | A 10-minute link to open a file |
 
 ---
 
@@ -505,6 +517,97 @@ send only the ids.
 | `gst_percentage` · `sgst_percentage` · `cgst_percentage` | GST applies: all three required, 0–100, ≤ 2 decimals, GST = SGST + CGST. GST does not apply: omit or `0` (stored empty) |
 
 Every problem comes back at once. Delete refuses (`409`) an item with stock or a purchase.
+
+---
+
+## Vendors (tenant_admin)
+
+On the DBA's `pms.mst_vendor`, `mst_vendor_item_group` (the stock groups a vendor supplies),
+`mst_vendor_financials` (one row per year) and `mst_vendor_certificates` (one row per vendor).
+Every write goes through his procedures, by named arguments. A vendor is addressed by its numeric
+`id` (his `vendor_cd`).
+
+### Vendor object
+
+```json
+{
+  "id": 1, "name": "ABC Computers", "address": "14 Residency Road", "city": "Bengaluru",
+  "state": "Karnataka", "country": "", "pin": "560025", "vendor_type": "Proprietor",
+  "mobile": "08023456789", "email": "sales@abc.in", "website": "abc.in", "reg_date": "2020-04-01",
+  "pan": "ABCDE1234F", "gstin": "29ABCDE1234F1ZW", "gstin_state": "Karnataka", "tan": "BLRA12345B",
+  "refered_by": "", "correspond_email": "", "correspond_mobile": "9845012345",
+  "supply_type": "Sales and service", "is_contruction_comp": false, "is_manufacturer": true,
+  "company_since": "1998",
+  "contacts": [{ "person": "Ravi Kumar", "designation": "Sales Manager", "mobile": "9845012345", "email": "ravi@abc.in" }, {…}, {…}],
+  "item_groups": [{ "grp_cd": 2, "item_group": "Printers" }]
+}
+```
+
+`GET /vendors/{id}` adds `financials` (newest year first) and `certificates` (every slot).
+Field names are the DBA's, including his spellings `refered_by` and `is_contruction_comp`.
+
+### Body (`POST /vendors`, `PUT /vendors/{id}`, `/validate`)
+
+The vendor's fields (not `id`, `gstin_state`, `item_groups`), `contacts` (up to 3) and
+`grp_cds` (the stock group ids it supplies; replaces the list on every save). Every problem
+comes back at once.
+
+| Field | Rule |
+|---|---|
+| `name` | required, spaces tidied, ≤ 250, unique ignoring case and spaces (`409`) |
+| `vendor_type` | optional: `Proprietor`, `Partnership`, `Ltd` or `Public` (any case) |
+| `supply_type` | optional: `Sales`, `Service` or `Sales and service` |
+| `pin` | India (country empty or India): 6 digits. Elsewhere: letters, digits, spaces, `-`, 3–10 |
+| `mobile` | the vendor's phone: optional `+` and 7–14 digits (spaces and dashes dropped) |
+| `correspond_mobile` · `contacts[].mobile` | 10-digit Indian mobile (`+91`/`0` dropped) |
+| `email` · `correspond_email` · `contacts[].email` | email format, lower-cased |
+| `pan` | PAN format, upper-cased, unique (`409`) |
+| `gstin` | GSTIN format and check digit, upper-cased, unique (`409`), must carry the PAN; `gstin_state` is set from its code |
+| `tan` | `ABCD12345E` format, upper-cased |
+| `reg_date` | `YYYY-MM-DD`, not in the future |
+| `company_since` | a year from 1800 to this year |
+| `contacts[].person` | required when the contact has anything else |
+| `grp_cds` | each must exist (`422`) |
+
+An emptied field is stored as NULL. Delete removes the vendor with its groups, financials,
+certificates and their files; a stock group a vendor supplies cannot be deleted (`409`).
+
+### Financials
+
+```json
+{ "fin_year": "2025-2026", "fin_turnover_declared": 12500000.5, "fin_profit_declared": -25000,
+  "fin_itr_no": "ACK123456", "fin_itr_date": "2025-09-15",
+  "fin_itr_s3_bucket_reference": "esis/vendors/1/b54efadfce33cd20-ITR-2025.pdf" }
+```
+
+`fin_year` two consecutive years (`2025-2026`), not after the current financial year, one row
+per year (`409`). Turnover ≥ 0, profit may be negative, both ≤ 2 decimals. ITR number ≤ 25
+(upper-cased), date not in the future. `PUT …/financials/{fin_year}` replaces the whole year
+(the year itself never changes). A replaced or deleted ITR file is removed from storage.
+
+### Certificates
+
+Slots: `gst`, `company_reg`, `pan`, `msme`, `tan`, `aadhar`, `oth_1`, `oth_2`, `oth_3`.
+
+```json
+{ "gst": { "file": "esis/vendors/1/ed35cf0c0f75afda-GST-certificate.pdf" },
+  "oth_1": { "file": "esis/vendors/1/1b13d4c81ece193b-iso.png", "caption": "ISO 9001 certificate" } }
+```
+
+`PUT` sends every slot to keep (a missing or empty `file` clears it). A slot is marked uploaded
+exactly when it has a file. The `oth_*` slots need a caption (≤ 100) when they have a file.
+A file no slot points at any more is removed from storage.
+
+### Files
+
+Upload first, then save the returned `key` in a certificate or financial year:
+
+`POST /vendors/{id}/files` (multipart field `file`, PDF, JPG or PNG by content, ≤ 10 MB) →
+`201 { "key": "esis/vendors/1/…-GST-certificate.pdf", "name": "…", "size": 1234, "content_type": "application/pdf" }`.
+
+A key must belong to the vendor (`<tenant>/vendors/<id>/`), else `422`. The bucket is private:
+`GET /vendors/{id}/files/url?key=…` returns `{ "url": "…" }`, valid 10 minutes. Without S3
+configured (`S3_BUCKET`), uploads and links answer `503`.
 
 ---
 
