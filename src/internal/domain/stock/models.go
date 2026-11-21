@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
+	"github.com/utkarshk014/procurement-system-be/src/packages/sheet"
 )
 
 // FunctionSuccess is what the DBA's validate functions return in message for a valid row.
@@ -238,4 +239,27 @@ func ItemFunctionError(message string) error {
 		return domain.Conflict("Item already exists", fe)
 	}
 	return domain.Validation(fe)
+}
+
+// MaxItemImportRows bounds one item import file.
+const MaxItemImportRows = 5000
+
+// ItemFields is the item import and export layout. The linked lists are given by name and
+// matched ignoring case and spaces; yes/no columns take yes, no, true, false, 1 or 0.
+var ItemFields = []sheet.Field{
+	{Header: "item_desc", Aliases: []string{"item_description", "description", "desc", "item", "item_name", "name"}, Required: true, Example: "HP LaserJet Toner 88A", Help: "Item description, unique"},
+	{Header: "item_code", Aliases: []string{"code", "item_no", "part_no"}, Required: true, Example: "TON-88A", Help: "Item code, unique; letters, digits and - / ."},
+	{Header: "goods_service_item", Aliases: []string{"type", "goods_service", "goods_or_service"}, Required: true, Example: "Goods", Help: "Goods or Service"},
+	{Header: "item_group", Aliases: []string{"group", "grp", "group_name"}, Required: true, Example: "Computers", Help: "Item group name from the item groups list"},
+	{Header: "uom", Aliases: []string{"unit", "units", "unit_of_measurement", "uom_name"}, Required: true, Example: "Nos", Help: "Unit name from the units list"},
+	{Header: "category", Aliases: []string{"category_name"}, Example: "Consumables", Help: "Category name from the categories list (optional)"},
+	{Header: "manufacturer", Aliases: []string{"make", "brand"}, Example: "HP", Help: "Manufacturer name from the manufacturers list (optional)"},
+	{Header: "gst_applicable", Aliases: []string{"gst"}, Example: "yes", Help: "yes or no (empty: yes)"},
+	{Header: "gst_hsn_code", Aliases: []string{"hsn", "hsn_code", "hsn_sac"}, Example: "84439959", Help: "HSN/SAC code, 4, 6 or 8 digits"},
+	{Header: "gst_percentage", Aliases: []string{"gst_rate", "gst_percent"}, Example: "18", Help: "GST %, required when GST applies; must equal SGST + CGST"},
+	{Header: "sgst_percentage", Aliases: []string{"sgst"}, Example: "9", Help: "SGST %"},
+	{Header: "cgst_percentage", Aliases: []string{"cgst"}, Example: "9", Help: "CGST %"},
+	{Header: "item_consumable", Aliases: []string{"consumable"}, Example: "yes", Help: "yes or no (goods only)"},
+	{Header: "item_is_spare", Aliases: []string{"spare"}, Example: "no", Help: "yes or no (goods only)"},
+	{Header: "track_serial", Aliases: []string{"serial"}, Example: "no", Help: "yes or no (goods only)"},
 }

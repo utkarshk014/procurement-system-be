@@ -78,6 +78,10 @@ type ItemUsecase interface {
 	Update(ctx context.Context, id int64, in ItemInput) (*Item, error)
 	// Delete removes an item through the DBA's procedure, or returns ErrItemNotFound / a 409.
 	Delete(ctx context.Context, id int64) error
+	// Import checks (dryRun) or saves the rows of an .xlsx laid out as ItemFields.
+	Import(ctx context.Context, rows [][]string, dryRun bool) (*domain.ImportReport, error)
+	// Export returns every item as an .xlsx laid out as ItemFields.
+	Export(ctx context.Context) ([]byte, error)
 }
 
 // ItemRepository talks to pms.mst_stk_items.
@@ -94,4 +98,16 @@ type ItemRepository interface {
 	Update(ctx context.Context, it *Item) error
 	// Delete calls the DBA's delete procedure with the item's stored description and code.
 	Delete(ctx context.Context, id int64) error
+	// CheckManyWithFunction runs the DBA's validate function for new items in one round trip.
+	CheckManyWithFunction(ctx context.Context, items []Item) ([]FunctionResult, error)
+	// CreateMany inserts every item in one transaction under the items lock, after checking
+	// again that their links exist and their descriptions and codes are free; any change since
+	// the dry run is a 409 and nothing is saved.
+	CreateMany(ctx context.Context, items []Item) error
+}
+
+// ItemLookups are the lists an item import resolves names against.
+type ItemLookups struct {
+	Groups, Categories, Manufacturers ListRepository
+	UOMs                              UOMRepository
 }

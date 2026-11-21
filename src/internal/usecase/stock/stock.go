@@ -279,13 +279,14 @@ func PrepareUOM(in domain_stock.UOMInput) (*domain_stock.UOM, error) {
 // ---- Items
 
 type itemUsecase struct {
-	repo   domain_stock.ItemRepository
-	logger *slog.Logger
+	repo    domain_stock.ItemRepository
+	lookups domain_stock.ItemLookups
+	logger  *slog.Logger
 }
 
-// NewItemUsecase builds the item master.
-func NewItemUsecase(repo domain_stock.ItemRepository, logger *slog.Logger) domain_stock.ItemUsecase {
-	return &itemUsecase{repo: repo, logger: logger}
+// NewItemUsecase builds the item master. lookups are the lists an Excel import names.
+func NewItemUsecase(repo domain_stock.ItemRepository, lookups domain_stock.ItemLookups, logger *slog.Logger) domain_stock.ItemUsecase {
+	return &itemUsecase{repo: repo, lookups: lookups, logger: logger}
 }
 
 func (uc *itemUsecase) List(ctx context.Context) ([]domain_stock.Item, error) {

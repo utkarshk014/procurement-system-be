@@ -152,3 +152,10 @@ func TestDownloadName(t *testing.T) {
 	assert.Equal(t, "GST-certificate.pdf", downloadName("esis/vendors/3/9f86d081884c7d65-GST-certificate.pdf"))
 	assert.Equal(t, "odd.pdf", downloadName("esis/vendors/3/odd.pdf"))
 }
+
+func TestImportColumnNames(t *testing.T) {
+	assert.Equal(t, "contact_2_mobile", domain_vendor.ImportColumn("contacts.1.mobile"))
+	assert.Equal(t, "item_groups", domain_vendor.ImportColumn("grp_cds"))
+	assert.Equal(t, "pan", domain_vendor.ImportColumn("pan"))
+	assert.Equal(t, []string{"Computers", "Printers", "Furniture"}, splitNames(" Computers, Printers;Furniture ,"))
+}

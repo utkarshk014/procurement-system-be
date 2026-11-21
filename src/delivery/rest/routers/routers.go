@@ -140,6 +140,7 @@ func SetInstitutionRoutes(r chi.Router, auth middlewares.AuthMiddleware, c contr
 // StockControllers are the stock masters' controllers.
 type StockControllers struct {
 	Groups, Categories, Manufacturers, UOMs, Items controllers_stock.Controller
+	ItemTransfer                                   controllers_stock.ItemTransferController
 }
 
 // SetStockRoutes: the stock masters under /api/v1/stock, tenant admins only. Rows are addressed
@@ -152,6 +153,11 @@ func SetStockRoutes(r chi.Router, auth middlewares.AuthMiddleware, c StockContro
 			"groups": c.Groups, "categories": c.Categories, "manufacturers": c.Manufacturers, "uoms": c.UOMs, "items": c.Items,
 		} {
 			r.Route("/"+path, func(r chi.Router) {
+				if path == "items" {
+					r.Get("/export", rest_utils.Wrap(logger, c.ItemTransfer.Export))
+					r.Get("/import/template", rest_utils.Wrap(logger, c.ItemTransfer.ImportTemplate))
+					r.Post("/import", rest_utils.Wrap(logger, c.ItemTransfer.Import))
+				}
 				r.Get("/", rest_utils.Wrap(logger, ctl.List))
 				r.Post("/", rest_utils.Wrap(logger, ctl.Create))
 				r.Post("/validate", rest_utils.Wrap(logger, ctl.Validate))
@@ -172,6 +178,9 @@ func SetVendorRoutes(r chi.Router, auth middlewares.AuthMiddleware, c controller
 		r.Get("/", rest_utils.Wrap(logger, c.List))
 		r.Post("/", rest_utils.Wrap(logger, c.Create))
 		r.Get("/options", rest_utils.Wrap(logger, c.Options))
+		r.Get("/export", rest_utils.Wrap(logger, c.Export))
+		r.Get("/import/template", rest_utils.Wrap(logger, c.ImportTemplate))
+		r.Post("/import", rest_utils.Wrap(logger, c.Import))
 		r.Post("/validate", rest_utils.Wrap(logger, c.Validate))
 		r.Get("/{id}", rest_utils.Wrap(logger, c.Get))
 		r.Put("/{id}", rest_utils.Wrap(logger, c.Update))

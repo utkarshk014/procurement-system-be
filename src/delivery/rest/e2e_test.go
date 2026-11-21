@@ -1340,6 +1340,169 @@ func TestEndToEnd(t *testing.T) {
 		assert.Greater(t, len(helpRows), 20)
 	})
 
+	t.Run("items and vendors: Excel import, export and template", func(t *testing.T) {
+		sheetOf := func(rows [][]string) []byte {
+			return xlsxFile(t, func(f *excelize.File) {
+				for i, r := range rows {
+					cell, _ := excelize.CoordinatesToCellName(1, i+1)
+					vals := make([]any, len(r))
+					for j, v := range r {
+						vals[j] = v
+					}
+					require.NoError(t, f.SetSheetRow("Sheet1", cell, &vals))
+				}
+			})
+		}
+		problemsByRow := func(d map[string]any) map[int]map[string]string {
+			out := map[int]map[string]string{}
+			for _, p := range d["problems"].([]any) {
+				pm := p.(map[string]any)
+				errs := map[string]string{}
+				for _, e := range pm["errors"].([]any) {
+					em := e.(map[string]any)
+					errs[fmt.Sprint(em["field"])] = fmt.Sprint(em["message"])
+				}
+				out[int(pm["row"].(float64))] = errs
+			}
+			return out
+		}
+
+		// ---- items
+		items := sheetOf([][]string{
+			{"Item Desc", "Item Code", "Type", "Group", "UOM", "Category", "Make", "GST", "HSN", "GST %", "SGST", "CGST", "Consumable"},
+			{"Toner  88A", "ton-88a", "goods", "snack FOODS", "nos", "Snack Foods", "", "yes", "84439959", "18%", "9", "9", "yes"},
+			{"AMC yearly", "AMC-Y", "Service", "Snack Foods", "NOS", "", "", "no", "", "", "", "", ""},
+			{"lays 52G", "NEW-1", "Goods", "Snack Foods", "NOS", "", "", "no", "", "", "", "", ""},
+			{"Toner 88A", "TON-88B", "Goods", "Snack Foods", "NOS", "", "", "no", "", "", "", "", ""},
+			{"Chair", "CH-1", "Goods", "Furniture", "Pieces", "", "", "maybe", "", "", "", "", ""},
+			{"Paper", "PAP-1", "Goods", "Snack Foods", "NOS", "", "", "yes", "4802", "18", "9", "8", ""},
+		})
+		dry := api.upload("/api/v1/stock/items/import?dry_run=true", esis, "items.xlsx", items)
+		require.Equal(t, 200, dry.status, dry.body)
+		d := dry.data()
+		assert.Equal(t, float64(6), d["total"])
+		assert.Equal(t, float64(2), d["ready"])
+		assert.Equal(t, float64(0), d["imported"])
+		probs := problemsByRow(d)
+		assert.Contains(t, probs[4]["item_desc"], "is already used by item LAY-52", "matches an existing item ignoring case")
+		assert.Contains(t, probs[5]["item_desc"], "is also in row 2 of this file")
+		assert.Contains(t, probs[6]["grp_cd"], `"Furniture" is not in the item groups list`)
+		assert.Contains(t, probs[6]["uom_cd"], `"Pieces" is not in the units list`)
+		assert.Equal(t, "must be yes or no", probs[6]["gst_applicable"])
+		assert.Equal(t, "must equal SGST plus CGST", probs[7]["gst_percentage"])
+		missing := d["missing"].(map[string]any)
+		assert.Equal(t, "Furniture", missing["item_group"].([]any)[0].(map[string]any)["name"])
+
+		imp := api.upload("/api/v1/stock/items/import", esis, "items.xlsx", items)
+		require.Equal(t, 200, imp.status, imp.body)
+		assert.Equal(t, float64(2), imp.data()["imported"])
+		var toner struct {
+			code, uom string
+			gst       float64
+			consum    bool
+		}
+		require.NoError(t, dbm.Control().QueryRow(ctx, `SELECT i.item_code, u.uom, i.gst_percentage::float8, i.item_consumable
+			FROM pms.mst_stk_items i JOIN pms.mst_stk_uom u ON u.uom_cd = i.uom_cd WHERE i.item_desc = 'Toner 88A'`).Scan(&toner.code, &toner.uom, &toner.gst, &toner.consum))
+		assert.Equal(t, "TON-88A", toner.code)
+		assert.Equal(t, "NOS", toner.uom)
+		assert.Equal(t, 18.0, toner.gst)
+		assert.True(t, toner.consum)
+		again := api.upload("/api/v1/stock/items/import", esis, "items.xlsx", items)
+		assert.Equal(t, float64(0), again.data()["imported"], "importing the same file twice adds nothing")
+
+		exp := api.raw("GET", "/api/v1/stock/items/export", esis, "", "")
+		require.Equal(t, 200, exp.status)
+		wb, err := excelize.OpenReader(strings.NewReader(exp.body))
+		require.NoError(t, err)
+		rows, err := wb.GetRows("Items")
+		require.NoError(t, err)
+		assert.Equal(t, "item_desc", rows[0][0])
+		found := false
+		for _, r := range rows[1:] {
+			if r[1] == "TON-88A" {
+				found = true
+				assert.Equal(t, []string{"Toner 88A", "TON-88A", "Goods", "Snack Foods", "NOS", "Snack Foods", "", "yes", "84439959", "18", "9", "9", "yes", "no", "no"}, r)
+			}
+		}
+		assert.True(t, found)
+		reimport := api.upload("/api/v1/stock/items/import?dry_run=true", esis, "items.xlsx", []byte(exp.body))
+		require.Equal(t, 200, reimport.status)
+		assert.Equal(t, float64(0), reimport.data()["ready"], "an exported file re-imports as all already used")
+
+		tpl := api.raw("GET", "/api/v1/stock/items/import/template", esis, "", "")
+		require.Equal(t, 200, tpl.status)
+		twb, err := excelize.OpenReader(strings.NewReader(tpl.body))
+		require.NoError(t, err)
+		head, _ := twb.GetRows("Items")
+		assert.Equal(t, "item_desc", head[0][0])
+		assert.Len(t, head, 2, "header and an example row")
+
+		bad := api.upload("/api/v1/stock/items/import?dry_run=true", esis, "x.xlsx", sheetOf([][]string{{"item_desc", "item_code"}, {"A", "B"}}))
+		assert.Equal(t, 422, bad.status)
+		assert.Contains(t, bad.fieldErrors()["file"], "Missing column(s): goods_service_item, item_group, uom")
+		assert.Equal(t, 403, api.upload("/api/v1/stock/items/import?dry_run=true", root, "items.xlsx", items).status)
+		for _, code := range []string{"TON-88A", "AMC-Y"} {
+			_, err := dbm.Control().Exec(ctx, `DELETE FROM pms.mst_stk_items WHERE item_code = $1`, code)
+			require.NoError(t, err)
+		}
+
+		// ---- vendors
+		vendors := sheetOf([][]string{
+			{"Vendor Name", "Type", "Supplies", "Item Groups", "PIN", "PAN", "GSTIN", "Correspond Mobile", "Reg Date", "Is Manufacturer", "Contact 1 Person", "Contact 1 Mobile", "contact_2_email"},
+			{"ABC  Computers", "proprietor", "sales", "Snack Foods", "560001", "abcde1234f", "29abcde1234f1zw", "+91 98450 12345", "01/04/2020", "yes", "Ravi", "9845012345", ""},
+			{"XYZ Traders", "", "", "", "", "", "", "", "", "", "", "", ""},
+			{"abc computers", "", "", "", "", "", "", "", "", "", "", "", ""},
+			{"Bad Vendor", "LLP", "", "Furniture, Snack Foods", "5600", "ABCDE1234F", "", "12345", "", "maybe", "", "", "x@"},
+		})
+		vdry := api.upload("/api/v1/vendors/import?dry_run=true", esis, "vendors.xlsx", vendors)
+		require.Equal(t, 200, vdry.status, vdry.body)
+		vd := vdry.data()
+		assert.Equal(t, float64(2), vd["ready"])
+		vp := problemsByRow(vd)
+		assert.Contains(t, vp[4]["name"], "is also in row 2 of this file")
+		bp := vp[5]
+		for _, field := range []string{"vendor_type", "item_groups", "pin", "pan", "correspond_mobile", "is_manufacturer", "contact_2_email", "contact_2_person"} {
+			assert.Contains(t, bp, field, "row 5 reports %s", field)
+		}
+		assert.Contains(t, bp["pan"], "is also in row 2")
+		assert.Equal(t, "Furniture", vd["missing"].(map[string]any)["item_groups"].([]any)[0].(map[string]any)["name"])
+
+		vimp := api.upload("/api/v1/vendors/import", esis, "vendors.xlsx", vendors)
+		require.Equal(t, 200, vimp.status, vimp.body)
+		assert.Equal(t, float64(2), vimp.data()["imported"])
+		list := api.do("GET", "/api/v1/vendors/", esis, nil)
+		var abc map[string]any
+		for _, v := range list.list() {
+			if v.(map[string]any)["name"] == "ABC Computers" {
+				abc = v.(map[string]any)
+			}
+		}
+		require.NotNil(t, abc)
+		assert.Equal(t, "ABCDE1234F", abc["pan"])
+		assert.Equal(t, "Karnataka", abc["gstin_state"])
+		assert.Equal(t, "2020-04-01", abc["reg_date"])
+		assert.Equal(t, "Proprietor", abc["vendor_type"])
+		assert.Equal(t, true, abc["is_manufacturer"])
+		assert.Equal(t, "Snack Foods", abc["item_groups"].([]any)[0].(map[string]any)["item_group"])
+		assert.Equal(t, "Ravi", abc["contacts"].([]any)[0].(map[string]any)["person"])
+
+		vexp := api.raw("GET", "/api/v1/vendors/export", esis, "", "")
+		require.Equal(t, 200, vexp.status)
+		vwb, err := excelize.OpenReader(strings.NewReader(vexp.body))
+		require.NoError(t, err)
+		vrows, _ := vwb.GetRows("Vendors")
+		assert.Equal(t, "name", vrows[0][0])
+		assert.Equal(t, "contact_3_email", vrows[0][len(vrows[0])-1])
+		vre := api.upload("/api/v1/vendors/import?dry_run=true", esis, "v.xlsx", []byte(vexp.body))
+		require.Equal(t, 200, vre.status, vre.body)
+		assert.Equal(t, float64(0), vre.data()["ready"], "exported vendors re-import as already there")
+		assert.Equal(t, 200, api.raw("GET", "/api/v1/vendors/import/template", esis, "", "").status)
+
+		for _, v := range api.do("GET", "/api/v1/vendors/", esis, nil).list() {
+			assert.Equal(t, 204, api.do("DELETE", fmt.Sprintf("/api/v1/vendors/%d", int(v.(map[string]any)["id"].(float64))), esis, nil).status)
+		}
+	})
+
 	t.Run("a delete and a create of the same trust cannot interleave", func(t *testing.T) {
 		require.Equal(t, 201, api.do("POST", "/api/v1/trusts/", esis, map[string]any{
 			"trust_code": "DLT", "trust_desc": "Delete race trust", "wrk_st_finyr": curFY, "wrk_st_date": curStartDate}).status)

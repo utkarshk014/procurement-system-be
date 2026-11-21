@@ -95,7 +95,9 @@ func NewUsecases(cfg *utils.Config, repos *repository.Repositories, databases do
 		StockCategories:    usecase_stock.NewListUsecase(domain_stock.Category, repos.StockCategories, logger),
 		StockManufacturers: usecase_stock.NewListUsecase(domain_stock.Manufacturer, repos.StockManufacturers, logger),
 		StockUOMs:          usecase_stock.NewUOMUsecase(repos.StockUOMs, logger),
-		StockItems:         usecase_stock.NewItemUsecase(repos.StockItems, logger),
+		StockItems: usecase_stock.NewItemUsecase(repos.StockItems, domain_stock.ItemLookups{
+			Groups: repos.StockGroups, Categories: repos.StockCategories, Manufacturers: repos.StockManufacturers, UOMs: repos.StockUOMs,
+		}, logger),
 
 		Vendors: usecase_vendor.NewVendorUsecase(repos.Vendors, files, cfg.Location(), logger),
 	}

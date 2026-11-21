@@ -83,6 +83,9 @@ Base URL: `http://localhost:8080` locally. All bodies are JSON
 | GET | `/api/v1/institutions/import/template` | tenant_admin | The import template (.xlsx) |
 | GET | `/api/v1/vendors` | tenant_admin | Every vendor with its item groups, sorted by name (`[]` when none) |
 | GET | `/api/v1/vendors/options` | tenant_admin | Vendor types, supply types, certificate slots |
+| GET | `/api/v1/vendors/export` | tenant_admin | Every vendor as an .xlsx in the import layout |
+| POST | `/api/v1/vendors/import` | tenant_admin | Check (`?dry_run=true`) or import an .xlsx of vendors |
+| GET | `/api/v1/vendors/import/template` | tenant_admin | The vendor import template (.xlsx) |
 | GET | `/api/v1/vendors/{id}` | tenant_admin | One vendor with its financials and certificates (404 if unknown) |
 | POST | `/api/v1/vendors/validate` | tenant_admin | Dry-run a create |
 | POST | `/api/v1/vendors` | tenant_admin | Add a vendor with its item groups (201) |
@@ -462,6 +465,9 @@ edit** yet (no update procedures) and only **items** can be deleted (open items)
 | POST | `/api/v1/stock/{list}/validate` | `200 { "valid": true, "entry": {…} }` (nothing written, `id` 0) | `409` · `422` |
 | POST | `/api/v1/stock/{list}` | `201` the saved row | `409` · `422` |
 | DELETE | `/api/v1/stock/items/{id}` | `204` | `404` · `409` |
+| GET | `/api/v1/stock/items/export` | `200` every item as an .xlsx in the import layout | — |
+| POST | `/api/v1/stock/items/import` | `200` an import report (see *Excel import of items and vendors*) | `422` |
+| GET | `/api/v1/stock/items/import/template` | `200` the item import template (.xlsx) | — |
 
 `{list}` is `groups`, `categories`, `manufacturers`, `uoms` or `items`.
 
@@ -608,6 +614,50 @@ Upload first, then save the returned `key` in a certificate or financial year:
 A key must belong to the vendor (`<tenant>/vendors/<id>/`), else `422`. The bucket is private:
 `GET /vendors/{id}/files/url?key=…` returns `{ "url": "…" }`, valid 10 minutes. Without S3
 configured (`S3_BUCKET`), uploads and links answer `503`.
+
+---
+
+## Excel import of items and vendors
+
+`POST /stock/items/import` and `POST /vendors/import` take an `.xlsx` as `multipart/form-data`,
+field `file` (5 MB; 5,000 items or 2,000 vendors at most). They work like the institution
+import: only the first sheet is read, row 1 is the header, headers are matched ignoring case,
+spaces and punctuation (`%` reads as *percent*, so `GST %` is `gst_percentage`), blank rows are
+ignored. `?dry_run=true` saves nothing; without it every ready row is saved in **one
+transaction** after the duplicates, links and the DBA's check are re-run under the lock (a
+change meanwhile is `409` and nothing is saved). Problem rows are skipped, so fixing them and
+uploading the same file again imports only those.
+
+Every row gets the checks of a single create (`POST /stock/items`, `POST /vendors`), plus:
+duplicates inside the file, duplicates against what is saved (item description or code; vendor
+name, PAN or GSTIN), and names that must exist in their lists. The **export** writes the same
+columns, so an exported file can be edited and re-imported (rows already there are reported, not
+duplicated). Import only adds; it never changes a saved row.
+
+**Items** (`GET /stock/items/import/template` has every column, an example row and a Help sheet):
+`item_desc`*, `item_code`*, `goods_service_item`* (Goods or Service), `item_group`*, `uom`*,
+`category`, `manufacturer` (names from their lists), `gst_applicable` (yes/no, empty = yes),
+`gst_hsn_code`, `gst_percentage`, `sgst_percentage`, `cgst_percentage`, `item_consumable`,
+`item_is_spare`, `track_serial` (yes/no). The DBA's `fn_validate_mst_stk_items` runs for every
+row in one round trip.
+
+**Vendors**: `name`*, `vendor_type`, `supply_type`, `item_groups` (group names separated by
+commas), `address`, `city`, `state`, `country`, `pin`, `mobile`, `email`, `website`, `reg_date`
+(YYYY-MM-DD, DD-MM-YYYY or DD/MM/YYYY), `company_since`, `refered_by`, `is_manufacturer`,
+`is_contruction_comp` (yes/no), `pan`, `gstin`, `tan`, `correspond_email`, `correspond_mobile`,
+`contact_1_person` … `contact_3_email`. Financials and certificates are not imported. The DBA's
+`fn_validate_mst_vendor` raises instead of returning, so it runs once per ready row.
+
+```json
+{ "data": { "dry_run": true, "total": 6, "ready": 2, "imported": 0, "skipped": 4,
+  "problems": [ { "row": 6, "key": "CH-1", "name": "Chair",
+                  "errors": [ { "field": "uom_cd", "message": "\"Pieces\" is not in the units list" } ] } ],
+  "missing": { "uom": [ { "name": "Pieces", "rows": 1 } ] } } }
+```
+
+`key` is the item code or the vendor's PAN. `missing` lists, per column (`item_group`,
+`category`, `manufacturer`, `uom`, `item_groups`), every name the file uses that its list does
+not have yet, most used first.
 
 ---
 

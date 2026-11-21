@@ -30,6 +30,11 @@ type Usecase interface {
 	UploadFile(ctx context.Context, vendorID int64, name string, size int64, body io.Reader) (*UploadedFile, error)
 	// FileURL returns a short-lived link to download one of the vendor's files.
 	FileURL(ctx context.Context, vendorID int64, key string) (string, error)
+
+	// Import checks (dryRun) or saves the rows of an .xlsx laid out as ImportFields.
+	Import(ctx context.Context, rows [][]string, dryRun bool) (*domain.ImportReport, error)
+	// Export returns every vendor as an .xlsx laid out as ImportFields.
+	Export(ctx context.Context) ([]byte, error)
 }
 
 // Repository talks to the DBA's vendor tables and procedures.
@@ -59,6 +64,13 @@ type Repository interface {
 	// SaveCertificates inserts or updates the row and returns the files it pointed at before.
 	SaveCertificates(ctx context.Context, vendorID int64, c Certificates) (oldFiles []string, err error)
 	GetCertificates(ctx context.Context, vendorID int64) (Certificates, error)
+
+	// Groups lists the stock item groups a vendor may supply.
+	Groups(ctx context.Context) ([]Group, error)
+	// CreateMany inserts every vendor with its groups in one transaction under the vendor lock,
+	// after checking again that names, PANs and GSTINs are free and the groups exist; any
+	// change since the dry run is a 409 and nothing is saved.
+	CreateMany(ctx context.Context, vendors []Vendor) error
 }
 
 // FileStore keeps vendor documents (S3). Keys are opaque paths chosen by the use case.

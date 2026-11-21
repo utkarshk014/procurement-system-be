@@ -75,6 +75,7 @@ func NewRouter(cfg *utils.Config, usecases *usecase.Usecases, db controllers_met
 		Manufacturers: controllers_stock.NewListController(domain_stock.Manufacturer, usecases.StockManufacturers, logger),
 		UOMs:          controllers_stock.NewUOMController(usecases.StockUOMs, logger),
 		Items:         controllers_stock.NewItemController(usecases.StockItems, logger),
+		ItemTransfer:  controllers_stock.NewItemTransferController(usecases.StockItems),
 	}, logger)
 	routers.SetInstitutionRoutes(r, auth, controllers_institution.NewInstitutionController(usecases, logger), logger)
 	routers.SetVendorRoutes(r, auth, controllers_vendor.NewVendorController(usecases.Vendors, logger), logger)

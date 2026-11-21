@@ -8,9 +8,11 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/utkarshk014/procurement-system-be/src/delivery/rest/controllers/transfer"
 	rest_utils "github.com/utkarshk014/procurement-system-be/src/delivery/rest/utils"
 	"github.com/utkarshk014/procurement-system-be/src/internal/domain"
 	domain_vendor "github.com/utkarshk014/procurement-system-be/src/internal/domain/vendor"
+	"github.com/utkarshk014/procurement-system-be/src/packages/sheet"
 )
 
 // VendorController is the vendor routes.
@@ -28,6 +30,9 @@ type VendorController interface {
 	SaveCertificates(w http.ResponseWriter, r *http.Request) error
 	UploadFile(w http.ResponseWriter, r *http.Request) error
 	FileURL(w http.ResponseWriter, r *http.Request) error
+	Import(w http.ResponseWriter, r *http.Request) error
+	ImportTemplate(w http.ResponseWriter, r *http.Request) error
+	Export(w http.ResponseWriter, r *http.Request) error
 }
 
 type controller struct {
@@ -248,5 +253,39 @@ func (c *controller) FileURL(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	rest_utils.Respond(w, http.StatusOK, map[string]string{"url": url})
+	return nil
+}
+
+// Import checks (?dry_run=true) or imports an .xlsx of vendors uploaded as the field "file".
+func (c *controller) Import(w http.ResponseWriter, r *http.Request) error {
+	rows, dryRun, err := transfer.ReadUpload(w, r)
+	if err != nil {
+		return err
+	}
+	report, err := c.uc.Import(r.Context(), rows, dryRun)
+	if err != nil {
+		return err
+	}
+	rest_utils.Respond(w, http.StatusOK, report)
+	return nil
+}
+
+// ImportTemplate returns an .xlsx with every import column, an example row and a Help sheet.
+func (c *controller) ImportTemplate(w http.ResponseWriter, _ *http.Request) error {
+	data, err := sheet.TemplateOf("Vendors", domain_vendor.ImportFields)
+	if err != nil {
+		return domain.Internal("Could not build the template", err)
+	}
+	transfer.SendXLSX(w, "vendors-import-template.xlsx", data)
+	return nil
+}
+
+// Export returns every vendor as an .xlsx in the import layout.
+func (c *controller) Export(w http.ResponseWriter, r *http.Request) error {
+	data, err := c.uc.Export(r.Context())
+	if err != nil {
+		return err
+	}
+	transfer.SendXLSX(w, "vendors.xlsx", data)
 	return nil
 }
